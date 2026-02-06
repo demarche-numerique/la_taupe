@@ -13,10 +13,17 @@ pub struct TaupeAndNode {
 
 impl TaupeAndNode {
     pub fn start() -> TaupeAndNode {
-        let child = Command::cargo_bin("la_taupe")
-            .unwrap()
-            .spawn()
-            .expect("failed to execute la_taupe");
+        TaupeAndNode::start_with_timeout(None)
+    }
+
+    pub fn start_with_timeout(timeout_secs: Option<u64>) -> TaupeAndNode {
+        let mut cmd = Command::cargo_bin("la_taupe").unwrap();
+
+        if let Some(secs) = timeout_secs {
+            cmd.env("LA_TAUPE_ANALYSIS_TIMEOUT_SECS", secs.to_string());
+        }
+
+        let child = cmd.spawn().expect("failed to execute la_taupe");
 
         let taupe = ChildGuard {
             child,
