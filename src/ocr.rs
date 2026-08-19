@@ -8,7 +8,7 @@ use regex::Regex;
 use crate::{
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
     ocrs::{extract_anchors, image_to_string_using_ocrs, ocrs_anchors},
-    provenance::{AnchorSource, Engine, Provenance},
+    provenance::{AnchorSource, Engine, Provenance, TextStats},
     rib::{extract_fr_bic, extract_iban, Rib},
     shapes::{Anchor, Point},
     tesseract::{img_to_string_using_tesseract, tess_analyze},
@@ -53,6 +53,11 @@ pub fn zoom_and_extract(
 
     let (ocrs_text, text_lines, maybe_anchors) = ocrs_anchors(img, &iban_regex, None);
     let maybe_anchor = maybe_anchors.first();
+
+    // empreinte de forme du texte de la première passe : des comptes, jamais le texte
+    if provenance.page_text_stats.is_none() {
+        provenance.page_text_stats = Some(TextStats::of(&ocrs_text));
+    }
 
     if let Some(anchor) = maybe_anchor {
         provenance.anchor = Some(AnchorSource::Ocrs);

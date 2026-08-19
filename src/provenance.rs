@@ -74,9 +74,33 @@ impl Engine {
     }
 }
 
+/// Ce qu'on retient du texte reconnu : des comptes, jamais des caractères.
+///
+/// Sert à comparer la nature des défaillances entre un corpus synthétique et un corpus
+/// réel qu'on ne peut pas lire — quand seuls les taux se comparent, on corrige des
+/// défauts qui n'existent que dans le corpus généré.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TextStats {
+    pub lines: u32,
+    pub words: u32,
+    pub chars: u32,
+    pub digits: u32,
+    pub alphas: u32,
+    pub symbols: u32,
+    pub short_lines: u32,
+    pub single_char_words: u32,
+    pub mixed_words: u32,
+    pub vocabulary_hits: u32,
+    pub has_iban_prefix: bool,
+    pub has_postal_code: bool,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Provenance {
     pub route: Option<Route>,
+    /// Statistiques de forme du texte reconnu sur la page, première passe. Un observateur
+    /// facultatif les calcule à la volée : le texte lui-même n'est jamais conservé.
+    pub page_text_stats: Option<TextStats>,
     pub anchor: Option<AnchorSource>,
     /// Hauteur de l'ancre en pixels : c'est la grandeur qui décide si le texte est
     /// assez grand pour être reconnu.
@@ -88,11 +112,105 @@ pub struct Provenance {
     pub second_pass: bool,
     pub image_width: u32,
     pub image_height: u32,
+    /// Ventilation du temps par étape, relevée en fin d'analyse.
+    pub timings: crate::timing::Timings,
     /// Codes postaux détectés sur la page, candidats retenus après tri, blocs lus.
     /// Trois comptes qui disent où la recherche du titulaire s'arrête.
     pub postal_anchors: u32,
     pub holder_candidates: u32,
     pub holder_blocks_read: u32,
+}
+
+impl TextStats {
+    /// Comptages de forme. Les termes cherchés sont ceux dont dépend l'ancrage du
+    /// titulaire et la distinction titulaire/domiciliation.
+    pub fn of(text: &str) -> Self {
+        const VOCABULARY: [&str; 12] = [
+            "IBAN",
+            "BIC",
+            "TITULAIRE",
+            "INTITULE",
+            "COMPTE",
+            "BANQUE",
+            "GUICHET",
+            "DOMICILIATION",
+            "RELEVE",
+            "IDENTITE",
+            "AGENCE",
+            "CLE",
+        ];
+
+        fn fold(c: char) -> char {
+            match c {
+                'é' | 'è' | 'ê' | 'ë' => 'E',
+                'à' | 'â' | 'ä' => 'A',
+                'î' | 'ï' => 'I',
+                'ô' | 'ö' => 'O',
+                'ù' | 'û' | 'ü' => 'U',
+                'ç' => 'C',
+                c => c.to_ascii_uppercase(),
+            }
+        }
+
+        let upper: String = text.chars().map(fold).collect();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let chars: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+
+        let count = |f: fn(&char) -> bool| chars.iter().filter(|c| f(c)).count() as u32;
+
+        let is_iban_like = |w: &str| {
+            let w = w.to_ascii_uppercase();
+            let b = w.as_bytes();
+            (b.len() >= 4 && &b[..2] == b"FR" && b[2].is_ascii_digit() && b[3].is_ascii_digit())
+                || (b.len() >= 6
+                    && b[..4].iter().all(|c| c.is_ascii_uppercase())
+                    && &b[4..6] == b"FR")
+        };
+
+        let mixed_words = words
+            .iter()
+            .filter(|w| w.chars().count() >= 3 && !is_iban_like(w))
+            .filter(|w| {
+                w.chars().any(|c| c.is_ascii_digit()) && w.chars().any(|c| c.is_alphabetic())
+            })
+            .count() as u32;
+
+        let has_iban_prefix = upper
+            .as_bytes()
+            .windows(4)
+            .any(|w| &w[..2] == b"FR" && w[2].is_ascii_digit() && w[3].is_ascii_digit());
+
+        // cinq chiffres, un blanc, puis au moins deux lettres
+        let has_postal_code = upper
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| {
+                pair[0].len() == 5
+                    && pair[0].bytes().all(|b| b.is_ascii_digit())
+                    && pair[1].chars().take(2).all(|c| c.is_ascii_uppercase())
+                    && pair[1].len() >= 2
+            });
+
+        TextStats {
+            lines: lines.len() as u32,
+            words: words.len() as u32,
+            chars: chars.len() as u32,
+            digits: count(|c| c.is_ascii_digit()),
+            alphas: count(|c| c.is_alphabetic()),
+            symbols: count(|c| !c.is_alphanumeric()),
+            short_lines: lines
+                .iter()
+                .filter(|l| l.trim().chars().count() < 3)
+                .count() as u32,
+            single_char_words: words.iter().filter(|w| w.chars().count() == 1).count() as u32,
+            mixed_words,
+            vocabulary_hits: VOCABULARY.iter().filter(|t| upper.contains(*t)).count() as u32,
+            has_iban_prefix,
+            has_postal_code,
+        }
+    }
 }
 
 impl Provenance {

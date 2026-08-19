@@ -21,6 +21,10 @@ pub fn bytes_to_img(bytes: Vec<u8>) -> Result<DynamicImage, String> {
 }
 
 pub fn pdf_bytes_to_string(bytes: Vec<u8>) -> String {
+    crate::timing::measure(crate::timing::poppler, || pdf_bytes_to_string_inner(bytes))
+}
+
+fn pdf_bytes_to_string_inner(bytes: Vec<u8>) -> String {
     let mut child = Command::new("pdftotext")
         .args(["-layout", "-", "-"])
         .stdin(Stdio::piped())
@@ -39,6 +43,10 @@ pub fn pdf_bytes_to_string(bytes: Vec<u8>) -> String {
 }
 
 pub fn pdf_to_img_bytes(file: Vec<u8>) -> Vec<u8> {
+    crate::timing::measure(crate::timing::poppler, || pdf_to_img_bytes_inner(file))
+}
+
+fn pdf_to_img_bytes_inner(file: Vec<u8>) -> Vec<u8> {
     let mut child = Command::new("pdftoppm")
         .args(["-png", "-singlefile"])
         .stdin(Stdio::piped())

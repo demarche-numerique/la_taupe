@@ -38,6 +38,10 @@ fn engine() -> &'static OcrEngine {
 
 /// Détecte les mots, les groupe en lignes et les reconnaît.
 pub fn recognize(img: &DynamicImage) -> Vec<TextLine> {
+    crate::timing::measure(crate::timing::ocrs, || recognize_inner(img))
+}
+
+fn recognize_inner(img: &DynamicImage) -> Vec<TextLine> {
     let img = img.clone().into_rgb8();
     let engine = engine();
 

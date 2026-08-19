@@ -39,6 +39,18 @@ url = "*"
 ocrs = "*"
 rten = "*"
 
+[features]
+# Outillage de mesure (generateur de corpus synthetique + banc). Hors du binaire de prod.
+bench = []
+
+[[bin]]
+name = "synth"
+required-features = ["bench"]
+
+[[bin]]
+name = "bench"
+required-features = ["bench"]
+
 [dev-dependencies]
 assert_cmd = "*"
 static_init = "*"
