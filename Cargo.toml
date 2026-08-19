@@ -36,16 +36,12 @@ serde_json = "*"
 tree_magic_mini = "*"
 reqwest = { version = "*", features = ["json", "blocking"] }
 url = "*"
-ocrs = "0.11"
-rten = "0.22"
 # PP-OCR (PaddleOCR) via ONNX Runtime, CPU only. Default engine since it is
-# both more accurate and 3-4x faster than ocrs on the real corpus. ocrs stays
-# available as a fallback engine (LA_TAUPE_OCR_ENGINE=ocrs).
+# both more accurate and 3-4x faster than ocrs, which it replaced outright
 # ONNX Runtime is fetched at build time and linked statically; the models are
 # fetched at build time by download-models.sh and embedded with include_bytes!.
 # The binary is self-contained: nothing is downloaded at runtime.
 oar-ocr = { version = "0.9", default-features = false, features = ["download-binaries", "simd"] }
-rten-imageproc = "0.22"
 
 [features]
 # Outillage de mesure (generateur de corpus synthetique + banc). Hors du binaire de prod.

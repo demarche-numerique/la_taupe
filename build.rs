@@ -24,12 +24,8 @@ fn main() {
     }
 }
 
-/// Every model file embedded in the binary via include_bytes!. The ocrs models are
-/// only used when LA_TAUPE_OCR_ENGINE=ocrs, but they are embedded regardless so the
-/// switch needs no deployment step.
-const MODELS: [&str; 5] = [
-    "text-detection.rten",
-    "text-recognition.rten",
+/// Every model file embedded in the binary via include_bytes!.
+const MODELS: [&str; 3] = [
     "pp-ocrv6_tiny_det.onnx",
     "pp-ocrv6_tiny_rec.onnx",
     "ppocrv6_dict.txt",

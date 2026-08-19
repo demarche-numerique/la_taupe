@@ -1,19 +1,18 @@
-//! PP-OCRv5 comme moteur de reconnaissance, derrière la même interface qu'ocrs.
+//! PP-OCR, le moteur de reconnaissance de page.
 //!
-//! Mesuré dans la cascade sur les deux corpus réels, contre ocrs : mieux sur tous les
-//! champs, deux fois moins de titulaires faux sur les photos, médiane divisée par 3,4.
-//! L'adaptateur rend des `TextLine` positionnées mot à mot, exactement comme
-//! `ocrs::recognize`, et la cascade n'a rien à savoir du moteur qui tourne.
-//!
-//! C'est le moteur par défaut. `LA_TAUPE_OCR_ENGINE=ocrs` rebascule sur ocrs — les deux
-//! se mesurent sur le même binaire, corpus par corpus.
+//! Mesuré dans la cascade sur les deux corpus réels, contre ocrs qu'il remplace :
+//! mieux sur tous les champs, deux fois moins de titulaires faux sur les photos,
+//! médiane divisée par 3,4. L'adaptateur rend des `TextLine` positionnées mot à mot ;
+//! tesseract reste le repli sur les recadrages d'IBAN.
 
 use std::sync::OnceLock;
 
 use image::DynamicImage;
 use oar_ocr::oarocr::{OAROCRBuilder, OAROCR};
-use ocrs::{TextChar, TextLine};
-use rten_imageproc::Rect;
+use regex::Regex;
+
+use crate::lines::{extract_anchors, lines_to_text, Rect, TextChar, TextLine};
+use crate::shapes::Anchor;
 
 /// Détection et reconnaissance, avec positions par mot. Sans classification
 /// d'orientation : mesurée sur les corpus réels, elle coûte sans rien rapporter — les
@@ -21,7 +20,7 @@ use rten_imageproc::Rect;
 static ENGINE: OnceLock<OAROCR> = OnceLock::new();
 
 /// Modèles PP-OCR v6 tiny, embarqués dans le binaire au build — téléchargés une fois
-/// par `download-models.sh`, comme ceux d'ocrs. Le binaire est autonome : rien n'est
+/// par `download-models.sh`. Le binaire est autonome : rien n'est
 /// téléchargé à l'exécution, ce qu'une prod hors ligne exige.
 ///
 /// v6 tiny est le choix sur mesure : sur les deux corpus réels il fait mieux qu'ocrs sur
@@ -146,9 +145,27 @@ fn spread(word: &str, rect: Rect) -> Vec<TextChar> {
         .collect()
 }
 
-/// Reconnaît la page et rend des lignes positionnées, au format d'ocrs.
+/// Reconnaît la page et rend des lignes positionnées.
 pub fn recognize(img: &DynamicImage) -> Vec<TextLine> {
-    crate::timing::measure(crate::timing::ocrs, || recognize_inner(img))
+    crate::timing::measure(crate::timing::ocr, || recognize_inner(img))
+}
+
+/// Reconnaît la page et rend le texte joint, ligne par ligne.
+pub fn image_to_string(img: DynamicImage) -> String {
+    lines_to_text(&recognize(&img))
+}
+
+/// Reconnaît la page et rend le texte, les lignes positionnées et les ancres du motif.
+pub fn recognize_anchors(
+    img: &DynamicImage,
+    word_regex: &Regex,
+    line_regex: Option<&Regex>,
+) -> (String, Vec<TextLine>, Vec<Anchor>) {
+    let text_lines = recognize(img);
+    let text = lines_to_text(&text_lines);
+    let anchors = extract_anchors(text_lines.clone(), word_regex, line_regex);
+
+    (text, text_lines, anchors)
 }
 
 fn recognize_inner(img: &DynamicImage) -> Vec<TextLine> {

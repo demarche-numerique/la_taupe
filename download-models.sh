@@ -4,13 +4,6 @@
 # The resulting binary is self-contained: nothing is downloaded at runtime.
 set -e
 
-# ocrs
-DETECTION_MODEL="https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.rten"
-RECOGNITION_MODEL="https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.rten"
-
-curl -fsSL "$DETECTION_MODEL" -o models/text-detection.rten
-curl -fsSL "$RECOGNITION_MODEL" -o models/text-recognition.rten
-
 # PP-OCR v6 tiny (PaddleOCR, ONNX), from the oar-ocr registry on ModelScope.
 # SHA-256 are those published in oar-ocr-core/src/core/download/registry.rs.
 PPOCR_BASE="https://www.modelscope.cn/api/v1/models/greatv/oar-ocr/repo?Revision=master&FilePath="

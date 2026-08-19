@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Timings {
-    /// Reconnaissance ocrs (détection + reconnaissance).
-    pub ocrs: Duration,
-    pub ocrs_calls: u32,
+    /// Reconnaissance PP-OCR (détection + reconnaissance).
+    pub ocr: Duration,
+    pub ocr_calls: u32,
     /// Sous-processus tesseract, hocr et texte.
     pub tesseract: Duration,
     pub tesseract_calls: u32,
@@ -42,9 +42,9 @@ pub fn measure<T>(bucket: fn(&mut Timings, Duration), f: impl FnOnce() -> T) -> 
     result
 }
 
-pub fn ocrs(t: &mut Timings, d: Duration) {
-    t.ocrs += d;
-    t.ocrs_calls += 1;
+pub fn ocr(t: &mut Timings, d: Duration) {
+    t.ocr += d;
+    t.ocr_calls += 1;
 }
 
 pub fn tesseract(t: &mut Timings, d: Duration) {

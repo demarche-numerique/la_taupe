@@ -29,9 +29,6 @@ pour essayer un autre jeu de modèles sans rebuild. Sur les corpus réels, v6 sm
 deux BIC de plus sur les photos mais perd sur le titulaire et coûte le double ; v5
 server met quarante secondes la page en CPU.
 
-**ocrs** reste embarqué et se sélectionne par `LA_TAUPE_OCR_ENGINE=ocrs`. Ses modèles
-sont téléchargés au build en mode release (`./download_models.sh`).
-
 **tesseract** (`tesseract-ocr-fra`, dépendance système) sert de second avis sur les
 recadrages que le moteur principal ne lit pas. Il est irremplaçable : mesuré sans lui,
 l'IBAN des photos perd trois documents sur trente-deux, et un second modèle PP-OCR à sa
@@ -42,7 +39,7 @@ Rust 1.95 minimum (`rust-toolchain.toml`), exigé par `oar-ocr`.
 ## Banc de mesure
 
 Le pipeline de reconnaissance de RIB enchaîne plusieurs stratégies (texte du PDF,
-OCR ocrs, recadrage autour d'une ancre, redressement puis tesseract). Aucune
+OCR de la page, recadrage autour d'une ancre, redressement puis tesseract). Aucune
 amélioration n'est évaluable sans mesure : le banc sert à comparer avant/après sur un
 corpus, et à savoir quelle branche produit réellement les succès.
 
@@ -101,6 +98,6 @@ la distribution des positions d'erreur — émises séparément, jamais jointes.
 
 `tests/bench_synth.rs` vérifie en intégration continue que les PDF natifs sont reconnus
 intégralement et que le rapport ne laisse rien fuiter. La mesure complète, OCR compris,
-demande tesseract et les modèles ocrs :
+demande tesseract et les modèles PP-OCR :
 
     cargo test --release --features bench --test bench_synth -- --ignored --nocapture
