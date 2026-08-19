@@ -5,6 +5,7 @@
 //! des fixtures existantes (peintres), pour qu'un RIB synthétique reste identifiable
 //! comme tel au premier coup d'œil.
 
+use crate::fi_extract::IbanToBankName;
 use crate::rib::{iban_from_bban, rib_key};
 
 use super::rng::Rng;
@@ -199,12 +200,17 @@ pub fn generate(rng: &mut Rng) -> RibData {
     let mut branch_lines = vec![format!("AGENCE DE {}", rng.pick(&CITIES).1)];
     branch_lines.extend(address(rng));
 
+    // Le BIC doit être celui de la banque de l'IBAN : le pipeline le recoupe avec le
+    // registre, et un BIC tiré au hasard serait rejeté à juste titre. Quand le registre
+    // n'en donne pas, on en tire un parmi les usuels — comme le fait un vrai RIB d'une
+    // banque absente du registre, que le pipeline ne peut pas valider.
+    let bic = IbanToBankName::new()
+        .expected_bic_prefix(&iban)
+        .map(|prefix| format!("{}FRPP{}", prefix, rng.pick(&["XXX", "", "123", "NTE"])))
+        .unwrap_or_else(|| rng.pick(&BICS).to_string());
+
     RibData {
-        bank: Bank {
-            code,
-            name,
-            bic: rng.pick(&BICS).to_string(),
-        },
+        bank: Bank { code, name, bic },
         branch,
         account,
         rib_key,
