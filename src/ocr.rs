@@ -2,12 +2,12 @@ use std::io::Cursor;
 
 use image::{DynamicImage, ImageDecoder, ImageReader};
 use log::trace;
-use ocrs::{TextItem, TextLine};
 use regex::Regex;
 
 use crate::{
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
-    ocrs::{extract_anchors, image_to_string_using_ocrs, ocrs_anchors},
+    lines::{extract_anchors, TextLine},
+    ppocr::{image_to_string, recognize_anchors},
     provenance::{AnchorSource, Engine, Provenance, TextStats},
     rib::{extract_fr_bic, extract_iban, Rib},
     shapes::{Anchor, Point},
@@ -51,25 +51,25 @@ pub fn zoom_and_extract(
 ) -> Option<Rib> {
     let iban_regex = Regex::new(r"(?:^|\s)FR[\dO]").unwrap();
 
-    let (ocrs_text, text_lines, maybe_anchors) = ocrs_anchors(img, &iban_regex, None);
+    let (page_text, text_lines, maybe_anchors) = recognize_anchors(img, &iban_regex, None);
     let maybe_anchor = maybe_anchors.first();
 
     // empreinte de forme du texte de la première passe : des comptes, jamais le texte
     if provenance.page_text_stats.is_none() {
-        provenance.page_text_stats = Some(TextStats::of(&ocrs_text));
+        provenance.page_text_stats = Some(TextStats::of(&page_text));
     }
 
     if let Some(anchor) = maybe_anchor {
-        provenance.anchor = Some(AnchorSource::Ocrs);
+        provenance.anchor = Some(AnchorSource::PpOcr);
         provenance.anchor_height = Some(anchor.height);
     }
 
-    if let Some(iban) = extract_iban(&ocrs_text) {
-        trace!("early returns from ocrs for: {}", name);
+    if let Some(iban) = extract_iban(&page_text) {
+        trace!("early returns from page text for: {}", name);
 
-        provenance.engine = Some(Engine::OcrsPage);
+        provenance.engine = Some(Engine::PpOcrPage);
 
-        let bic = extract_fr_bic(&ocrs_text, Some(&iban));
+        let bic = extract_fr_bic(&page_text, Some(&iban));
         let account_holder =
             zoom_and_extract_account_holder_traced(img, text_lines, name, provenance);
 
@@ -77,16 +77,16 @@ pub fn zoom_and_extract(
     };
 
     if let Some(anchor) = maybe_anchor {
-        trace!("ocrs anchor found");
+        trace!("ppocr anchor found");
 
         let iban_image = crop(img, anchor.iban_mask(), name, "mask");
 
         if let Some(iban) = extract_iban_in_image(&iban_image, name) {
-            provenance.engine = Some(Engine::OcrsCrop);
+            provenance.engine = Some(Engine::PpOcrCrop);
 
             let account_holder =
                 zoom_and_extract_account_holder_traced(img, text_lines.clone(), name, provenance);
-            let bic = extract_fr_bic(&ocrs_text, Some(&iban));
+            let bic = extract_fr_bic(&page_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -95,11 +95,11 @@ pub fn zoom_and_extract(
         let iban_image = crop(img, anchor.narrow_iban_mask(), name, "narrow_mask");
 
         if let Some(iban) = extract_iban_in_image(&iban_image, name) {
-            provenance.engine = Some(Engine::OcrsNarrowCrop);
+            provenance.engine = Some(Engine::PpOcrNarrowCrop);
 
             let account_holder =
                 zoom_and_extract_account_holder_traced(img, text_lines, name, provenance);
-            let bic = extract_fr_bic(&ocrs_text, Some(&iban));
+            let bic = extract_fr_bic(&page_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -156,10 +156,10 @@ pub fn zoom_and_extract(
         if let Some(iban) = extract_iban_in_image(&iban_image, name) {
             provenance.engine = Some(Engine::TessCrop);
 
-            let (ocrs_text, text_lines, _) = ocrs_anchors(&img, &iban_regex, None);
+            let (page_text, text_lines, _) = recognize_anchors(&img, &iban_regex, None);
             let account_holder =
                 zoom_and_extract_account_holder_traced(&img, text_lines, name, provenance);
-            let bic = extract_fr_bic(&ocrs_text, Some(&iban));
+            let bic = extract_fr_bic(&page_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -260,11 +260,11 @@ fn zoom_and_extract_account_holder_traced(
     // de la page au lieu de recadrer a été mesuré — moins vingt points de titulaire.
     let read_mask = |index: usize, mask: (u32, u32, u32, u32), suffix: &str| -> String {
         let cropped_img = crop(img, mask, name, &format!("{}_{}", index, suffix));
-        image_to_string_using_ocrs(cropped_img)
+        image_to_string(cropped_img)
     };
 
     // Chaque code postal détecté coûtait jusqu'à deux recadrages reconnus — jusqu'à
-    // douze appels ocrs sur un document dense en codes postaux (agence, mentions,
+    // douze appels OCR sur un document dense en codes postaux (agence, mentions,
     // cachet), pour un seul bloc utile. La lecture pleine page, déjà en main, permet de
     // trier avant de payer : les codes postaux dont le voisinage se présente comme une
     // domiciliation sont écartés d'emblée, ceux dont le voisinage porte une civilité ou
@@ -352,7 +352,7 @@ fn zoom_and_extract_account_holder_traced(
                 name,
                 &format!(r#"{}_account_holder_mask"#, index),
             );
-            image_to_string_using_ocrs(cropped_img)
+            image_to_string(cropped_img)
         })
         .filter(|text| account_holder_word_regex.is_match(text))
         .find_map(|text| find_simple_account_holder(&text, 1))
@@ -402,23 +402,24 @@ fn bytes_to_img(content: Vec<u8>) -> Option<DynamicImage> {
     Some(img.into_luma8().into())
 }
 
+/// Lit l'IBAN dans un recadrage : PP-OCR d'abord, tesseract en repli.
+///
+/// PP-OCR lit ces recadrages plus souvent et bien plus vite que tesseract. Le repli
+/// reste : mesuré sans lui, l'IBAN des photos perd trois documents sur trente-deux,
+/// et un second modèle PP-OCR à sa place n'en récupère qu'un — deux tailles d'un même
+/// modèle partagent leurs erreurs.
 fn extract_iban_in_image(cropped_img: &DynamicImage, name: &str) -> Option<String> {
-    let tess_iban = img_to_string_using_tesseract(cropped_img.clone());
-    if let Some(iban) = extract_iban(&tess_iban) {
+    let ocr = image_to_string(cropped_img.clone());
+    if let Some(iban) = extract_iban(&ocr) {
         return Some(iban);
-    };
+    }
 
-    let ocrs_iban = image_to_string_using_ocrs(cropped_img.clone());
-    if let Some(iban) = extract_iban(&ocrs_iban) {
+    let tess = img_to_string_using_tesseract(cropped_img.clone());
+    if let Some(iban) = extract_iban(&tess) {
         return Some(iban);
-    };
+    }
 
-    log::trace!(
-        "not found for {}: tess_iban: {}, ocrs_iban: {}",
-        name,
-        tess_iban,
-        ocrs_iban
-    );
+    log::trace!("not found for {}: {} / {}", name, ocr, tess);
 
     None
 }

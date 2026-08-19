@@ -59,8 +59,8 @@ pub struct FileReport {
     pub width: u32,
     pub height: u32,
     pub duration_ms: u64,
-    pub ocrs_ms: u64,
-    pub ocrs_calls: u32,
+    pub ocr_ms: u64,
+    pub ocr_calls: u32,
     pub tess_ms: u64,
     pub tess_calls: u32,
     pub preprocess_ms: u64,
@@ -96,8 +96,8 @@ impl FileReport {
             width: provenance.image_width,
             height: provenance.image_height,
             duration_ms: 0,
-            ocrs_ms: provenance.timings.ocrs.as_millis() as u64,
-            ocrs_calls: provenance.timings.ocrs_calls,
+            ocr_ms: provenance.timings.ocr.as_millis() as u64,
+            ocr_calls: provenance.timings.ocr_calls,
             tess_ms: provenance.timings.tesseract.as_millis() as u64,
             tess_calls: provenance.timings.tesseract_calls,
             preprocess_ms: provenance.timings.preprocess.as_millis() as u64,
@@ -273,12 +273,12 @@ impl Report {
                 file.duration_ms
             ));
             // ventilation par document, quand elle est renseignée
-            if file.ocrs_calls + file.tess_calls > 0 {
+            if file.ocr_calls + file.tess_calls > 0 {
                 out.push_str(&format!(
-                    "{:<48}   ocrs {:>3}× {:>6} ms · tess {:>2}× {:>6} ms · pré {:>5} ms · CP {}/{}/{}\n",
+                    "{:<48}   ocr {:>4}× {:>6} ms · tess {:>2}× {:>6} ms · pré {:>5} ms · CP {}/{}/{}\n",
                     "",
-                    file.ocrs_calls,
-                    file.ocrs_ms,
+                    file.ocr_calls,
+                    file.ocr_ms,
                     file.tess_calls,
                     file.tess_ms,
                     file.preprocess_ms,
@@ -468,13 +468,13 @@ impl Report {
         let total: u64 = durations.iter().sum();
 
         let sum = |f: fn(&FileReport) -> u64| self.files.iter().map(f).sum::<u64>();
-        let (ocrs, tess, pre, pop) = (
-            sum(|f| f.ocrs_ms),
+        let (ocr, tess, pre, pop) = (
+            sum(|f| f.ocr_ms),
             sum(|f| f.tess_ms),
             sum(|f| f.preprocess_ms),
             sum(|f| f.poppler_ms),
         );
-        let calls_ocrs: u32 = self.files.iter().map(|f| f.ocrs_calls).sum();
+        let calls_ocr: u32 = self.files.iter().map(|f| f.ocr_calls).sum();
         let calls_tess: u32 = self.files.iter().map(|f| f.tess_calls).sum();
         let pct = |ms: u64| {
             if total == 0 {
@@ -487,16 +487,16 @@ impl Report {
         format!(
             "\nDurées\n  médiane {} ms · p95 {} ms · total {:.1} s\n\
              \n  Ventilation du temps\n\
-             \x20 ocrs          {:>7.1} s  ({:>4.1} %)  {:>4} appels\n\
+             \x20 ppocr         {:>7.1} s  ({:>4.1} %)  {:>4} appels\n\
              \x20 tesseract     {:>7.1} s  ({:>4.1} %)  {:>4} appels\n\
              \x20 prétraitement {:>7.1} s  ({:>4.1} %)\n\
              \x20 poppler       {:>7.1} s  ({:>4.1} %)\n",
             median,
             p95,
             total as f32 / 1000.0,
-            ocrs as f32 / 1000.0,
-            pct(ocrs),
-            calls_ocrs,
+            ocr as f32 / 1000.0,
+            pct(ocr),
+            calls_ocr,
             tess as f32 / 1000.0,
             pct(tess),
             calls_tess,
@@ -524,8 +524,8 @@ mod tests {
             src: Some("pdf_img".to_string()),
             recipe: Some("h20".to_string()),
             route: Some("pdf_image"),
-            engine: Some("ocrs:page"),
-            anchor: Some("ocrs"),
+            engine: Some("ppocr:page"),
+            anchor: Some("ppocr"),
             anchor_height: Some(21),
             angle_deg: Some(-0.4),
             second_pass: false,
@@ -535,8 +535,8 @@ mod tests {
             width: 1240,
             height: 1754,
             duration_ms: 870,
-            ocrs_ms: 0,
-            ocrs_calls: 0,
+            ocr_ms: 0,
+            ocr_calls: 0,
             tess_ms: 0,
             tess_calls: 0,
             preprocess_ms: 0,
@@ -657,7 +657,7 @@ mod tests {
         .render_files();
 
         assert!(rendered.contains("a.pdf"));
-        assert!(rendered.contains("ocrs:page"));
+        assert!(rendered.contains("ppocr:page"));
         assert!(!rendered.contains("FR76"));
     }
 }

@@ -23,7 +23,7 @@ pub enum Route {
 /// Moteur ayant fourni l'ancre de localisation de l'IBAN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnchorSource {
-    Ocrs,
+    PpOcr,
     Tesseract,
 }
 
@@ -32,12 +32,12 @@ pub enum AnchorSource {
 pub enum Engine {
     /// `pdftotext`, sans OCR.
     PdfText,
-    /// OCR de la page entière par ocrs.
-    OcrsPage,
-    /// Recadrage autour d'une ancre ocrs.
-    OcrsCrop,
+    /// OCR de la page entière par PP-OCR.
+    PpOcrPage,
+    /// Recadrage autour d'une ancre PP-OCR.
+    PpOcrCrop,
     /// Recadrage étroit, pour les IBAN espacés de façon inhabituelle.
-    OcrsNarrowCrop,
+    PpOcrNarrowCrop,
     /// Recadrage autour d'une ancre tesseract, après redressement éventuel.
     TessCrop,
 }
@@ -56,7 +56,7 @@ impl Route {
 impl AnchorSource {
     pub fn as_str(&self) -> &'static str {
         match self {
-            AnchorSource::Ocrs => "ocrs",
+            AnchorSource::PpOcr => "ppocr",
             AnchorSource::Tesseract => "tess",
         }
     }
@@ -66,9 +66,9 @@ impl Engine {
     pub fn as_str(&self) -> &'static str {
         match self {
             Engine::PdfText => "pdf_text",
-            Engine::OcrsPage => "ocrs:page",
-            Engine::OcrsCrop => "ocrs:crop",
-            Engine::OcrsNarrowCrop => "ocrs:narrow",
+            Engine::PpOcrPage => "ppocr:page",
+            Engine::PpOcrCrop => "ppocr:crop",
+            Engine::PpOcrNarrowCrop => "ppocr:narrow",
             Engine::TessCrop => "tess:crop",
         }
     }

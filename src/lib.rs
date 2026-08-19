@@ -1,13 +1,14 @@
+pub mod analysis;
 #[cfg(feature = "bench")]
 pub mod bench;
-pub mod analysis;
 pub mod datamatrix;
 pub mod fi_extract;
 pub mod file_utils;
 pub mod http;
 pub mod image_utils;
+pub mod lines;
 pub mod ocr;
-pub mod ocrs;
+pub mod ppocr;
 pub mod provenance;
 pub mod rib;
 pub mod shapes;
