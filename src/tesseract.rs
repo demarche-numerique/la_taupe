@@ -135,7 +135,7 @@ fn find_angle(hocr_string: &str, iban_anchor: ElementRef) -> Option<f32> {
     angle
 }
 
-fn iban_el(doc: &Html) -> Option<ElementRef> {
+fn iban_el(doc: &Html) -> Option<ElementRef<'_>> {
     let selector = Selector::parse("span.ocrx_word").unwrap();
     let re_iban = Regex::new(r"(?:^|\s)FR[\dO]").unwrap();
 

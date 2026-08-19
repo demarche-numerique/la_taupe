@@ -5,3 +5,5 @@ models/*
 !models/.gitkeep
 la_taupe_debug
 .ruby-version
+gitignored/
+**/truth.csv
