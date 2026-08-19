@@ -19,6 +19,10 @@ const GREEN: Rgb<u8> = Rgb::<u8>([0, 255, 0]);
 const BLACK: Rgb<u8> = Rgb::<u8>([0, 0, 0]);
 
 pub fn only_rotate(image: &DynamicImage, name: &str) -> DynamicImage {
+    crate::timing::measure(crate::timing::preprocess, || only_rotate_inner(image, name))
+}
+
+fn only_rotate_inner(image: &DynamicImage, name: &str) -> DynamicImage {
     let whithout_shadow_image = remove_shadows(image, name);
     let angle = angle(&whithout_shadow_image, name);
 
@@ -26,6 +30,10 @@ pub fn only_rotate(image: &DynamicImage, name: &str) -> DynamicImage {
 }
 
 pub fn clean_image(image: &DynamicImage, name: &str) -> DynamicImage {
+    crate::timing::measure(crate::timing::preprocess, || clean_image_inner(image, name))
+}
+
+fn clean_image_inner(image: &DynamicImage, name: &str) -> DynamicImage {
     let whithout_shadow_image = remove_shadows(image, name);
     let angle = angle(&whithout_shadow_image, name);
 

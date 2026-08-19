@@ -11,6 +11,12 @@ use scraper::{ElementRef, Html, Selector};
 use crate::shapes::{Anchor, Point};
 
 pub fn img_to_string_using_tesseract(img: DynamicImage) -> String {
+    crate::timing::measure(crate::timing::tesseract, || {
+        img_to_string_using_tesseract_inner(img)
+    })
+}
+
+fn img_to_string_using_tesseract_inner(img: DynamicImage) -> String {
     let img = increase_image_size_if_needed(img);
 
     let mut buffer = Cursor::new(Vec::new());
@@ -45,7 +51,7 @@ pub fn img_to_string_using_tesseract(img: DynamicImage) -> String {
 }
 
 pub fn tess_analyze(img: &DynamicImage) -> (String, Option<f32>, Option<Anchor>) {
-    let (hocr, doc) = image_to_hocr(img);
+    let (hocr, doc) = crate::timing::measure(crate::timing::tesseract, || image_to_hocr(img));
     let (mut angle, mut anchor) = (None, None);
 
     if let Some(el) = iban_el(&doc) {
