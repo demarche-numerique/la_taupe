@@ -36,6 +36,22 @@ place n'en récupère que trois — deux tailles d'un même modèle partagent le
 redondance qui paie vient d'un moteur d'une autre famille.
 
 Rust 1.95 minimum (`rust-toolchain.toml`), exigé par `oar-ocr`.
+## Référentiels embarqués
+
+Deux fichiers de référence sont compilés dans le binaire (`include_str!`) :
+
+- `src/riad_bank_name.csv` — code banque → BIC, nom ; extrait de la liste des IFM de la
+  BCE. Donne le nom de la banque et valide le code établissement du BIC contre le code
+  banque de l'IBAN.
+- `src/code_postal_commune.csv` — code postal → libellé d'acheminement ; extrait de la
+  Base officielle des codes postaux de La Poste (Licence Ouverte 2.0). Corrige la ligne
+  de ville d'un titulaire quand le code postal est sûr et la ville approchante.
+
+`./scripts/update-references.sh` les rafraîchit tous les deux : il trouve la dernière
+édition BCE, fusionne en gardant le BIC précédent quand la nouvelle édition l'a vidé
+(la BCE cesse d'en maintenir certains d'une édition à l'autre), et affiche ce qui change
+avant de remplacer. À lancer de temps en temps, puis `git diff` et commit.
+
 ## Banc de mesure
 
 Le pipeline de reconnaissance de RIB enchaîne plusieurs stratégies (texte du PDF,
