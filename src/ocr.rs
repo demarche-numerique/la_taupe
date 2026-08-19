@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use image::{DynamicImage, ImageDecoder, ImageReader};
 use log::trace;
-use ocrs::TextLine;
+use ocrs::{TextItem, TextLine};
 use regex::Regex;
 
 use crate::{
@@ -10,6 +10,7 @@ use crate::{
     ocrs::{extract_anchors, image_to_string_using_ocrs, ocrs_anchors},
     provenance::{AnchorSource, Engine, Provenance},
     rib::{extract_fr_bic, extract_iban, Rib},
+    shapes::Anchor,
     tesseract::{img_to_string_using_tesseract, tess_analyze},
     text::simple_account_holder::find_simple_account_holder,
 };
@@ -155,6 +156,51 @@ fn find_civilite(s: &str) -> Option<usize> {
         .map(|m| m.start())
 }
 
+/// Texte des lignes déjà reconnues dont la boîte tombe dans le masque, dans l'ordre
+/// vertical, avec les mots de chaque ligne triés de gauche à droite.
+///
+/// Sert à trier les candidats avant de payer un recadrage : la page a été reconnue une
+/// fois, et son texte suffit à dire si un voisinage ressemble à une domiciliation ou à
+/// un titulaire. Il ne remplace pas le recadrage pour la lecture elle-même.
+fn text_in_mask(text_lines: &[TextLine], (x, y, w, h): (u32, u32, u32, u32)) -> String {
+    let (left, top, right, bottom) = (x as i32, y as i32, (x + w) as i32, (y + h) as i32);
+
+    let mut rows: Vec<(i32, String)> = text_lines
+        .iter()
+        .filter_map(|line| {
+            let mut words: Vec<(i32, String)> = line
+                .words()
+                .filter(|word| {
+                    let r = word.bounding_rect();
+                    let cx = (r.left() + r.right()) / 2;
+                    let cy = (r.top() + r.bottom()) / 2;
+                    cx >= left && cx < right && cy >= top && cy < bottom
+                })
+                .map(|word| (word.bounding_rect().left(), word.to_string()))
+                .collect();
+
+            if words.is_empty() {
+                return None;
+            }
+            words.sort_by_key(|(x, _)| *x);
+
+            let text = words
+                .into_iter()
+                .map(|(_, w)| w)
+                .collect::<Vec<String>>()
+                .join(" ");
+            Some((line.bounding_rect().top(), text))
+        })
+        .collect();
+
+    rows.sort_by_key(|(top, _)| *top);
+    rows.into_iter()
+        .map(|(_, t)| t)
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+
 fn zoom_and_extract_account_holder(
     img: &DynamicImage,
     text_lines: Vec<TextLine>,
@@ -169,39 +215,83 @@ fn zoom_and_extract_account_holder(
         Some(&code_postal_line_regex),
     );
 
-    let account_holders = postal_anchors
+    // Un bloc adressé n'est pas forcément le titulaire : l'agence de domiciliation a
+    // elle aussi un code postal. Le chemin texte s'en protège en classant chaque bloc
+    // par son contexte ; ici, rien ne le faisait — et le recadrage aligné à droite,
+    // tenté faute de civilité, décale la fenêtre vers la gauche jusqu'à happer le nom du
+    // titulaire voisin, qui se retrouve collé à l'adresse de l'agence.
+    let domiciliation = Regex::new(r"(?i)(domiciliation|agence|cadre r[ée]serv[ée])").unwrap();
+    let holder_label = Regex::new(r"(?i)(titulaire|intitul[ée]|account owner)").unwrap();
+
+    // Le recadrage est un vrai zoom : sur les photos, la reconnaissance rapprochée lit
+    // les petits caractères que la passe pleine page rate. Lire le bloc dans les lignes
+    // de la page au lieu de recadrer a été mesuré — moins vingt points de titulaire.
+    let read_mask = |index: usize, mask: (u32, u32, u32, u32), suffix: &str| -> String {
+        let cropped_img = crop(img, mask, name, &format!("{}_{}", index, suffix));
+        image_to_string_using_ocrs(cropped_img)
+    };
+
+    // Chaque code postal détecté coûtait jusqu'à deux recadrages reconnus — jusqu'à
+    // douze appels ocrs sur un document dense en codes postaux (agence, mentions,
+    // cachet), pour un seul bloc utile. La lecture pleine page, déjà en main, permet de
+    // trier avant de payer : les codes postaux dont le voisinage se présente comme une
+    // domiciliation sont écartés d'emblée, ceux dont le voisinage porte une civilité ou
+    // un libellé de titulaire passent en premier, et l'examen s'arrête au premier bloc
+    // convaincant.
+    let mut ranked: Vec<(usize, &Anchor, i32)> = postal_anchors
         .iter()
         .enumerate()
         .map(|(index, anchor)| {
-            let cropped_img = crop(
-                img,
-                anchor.addr_mask(),
-                name,
-                &format!(r#"{}_addr_mask"#, index),
-            );
-            (index, image_to_string_using_ocrs(cropped_img), anchor)
-        })
-        .filter_map(|(index, text, anchor)| {
-            if match_civilite(&text) {
-                Some(text)
+            let around = text_in_mask(&text_lines, anchor.addr_mask());
+            let score = if holder_label.is_match(&around) {
+                2
+            } else if match_civilite(&around) {
+                1
+            } else if domiciliation.is_match(&around) {
+                -1
             } else {
-                let cropped_img = crop(
-                    img,
-                    anchor.right_align_addr_mask(),
-                    name,
-                    &format!(r#"{}_right_align_addr_mask"#, index),
-                );
-                let new_text = image_to_string_using_ocrs(cropped_img);
-
-                if match_civilite(&new_text) {
-                    Some(new_text)
-                } else {
-                    None
-                }
-            }
+                0
+            };
+            (index, anchor, score)
         })
-        .filter_map(|text| trim_holder(&text, &code_postal_line_regex))
-        .collect::<Vec<String>>();
+        .filter(|(_, _, score)| *score >= 0)
+        .collect();
+    ranked.sort_by_key(|(_, _, score)| -*score);
+
+    let mut account_holders: Vec<String> = Vec::new();
+    for (index, anchor, score) in ranked {
+        let text = read_mask(index, anchor.addr_mask(), "addr_mask");
+        // un bloc qui se présente comme domiciliation ne devient pas titulaire, même
+        // en le recadrant autrement
+        if domiciliation.is_match(&text) && !holder_label.is_match(&text) {
+            continue;
+        }
+        let text = if match_civilite(&text) {
+            Some(text)
+        } else {
+            let new_text = read_mask(
+                index,
+                anchor.right_align_addr_mask(),
+                "right_align_addr_mask",
+            );
+            if match_civilite(&new_text) && !domiciliation.is_match(&new_text) {
+                Some(new_text)
+            } else {
+                None
+            }
+        };
+        if let Some(holder) = text.and_then(|t| trim_holder(&t, &code_postal_line_regex)) {
+            let labelled = holder_label.is_match(&holder);
+            account_holders.push(holder);
+            // le premier bloc porteur d'un libellé — ou le premier tout court quand la
+            // page n'en désigne aucun — suffit : inutile de reconnaître les suivants
+            if labelled || score >= 1 {
+                break;
+            }
+        }
+    }
+    // à plusieurs candidats, celui qui porte un libellé de titulaire l'emporte
+    account_holders.sort_by_key(|text| !holder_label.is_match(text));
 
     // `s` porte déjà ses sauts de ligne : les recollecter caractère à caractère
     // aplatirait le titulaire en une seule ligne
