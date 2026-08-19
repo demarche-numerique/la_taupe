@@ -50,8 +50,8 @@ impl Addr {
             .unwrap_or(0);
 
         self.inner_lines[start..]
-            .to_vec()
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|line| {
                 if line.contains(':') {
                     line.split(':').nth(1).unwrap().to_string()

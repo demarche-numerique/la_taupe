@@ -88,6 +88,11 @@ pub struct Provenance {
     pub second_pass: bool,
     pub image_width: u32,
     pub image_height: u32,
+    /// Codes postaux détectés sur la page, candidats retenus après tri, blocs lus.
+    /// Trois comptes qui disent où la recherche du titulaire s'arrête.
+    pub postal_anchors: u32,
+    pub holder_candidates: u32,
+    pub holder_blocks_read: u32,
 }
 
 impl Provenance {

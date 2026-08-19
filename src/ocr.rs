@@ -65,7 +65,8 @@ pub fn zoom_and_extract(
         provenance.engine = Some(Engine::OcrsPage);
 
         let bic = extract_fr_bic(&ocrs_text, Some(&iban));
-        let account_holder = zoom_and_extract_account_holder(img, text_lines, name);
+        let account_holder =
+            zoom_and_extract_account_holder_traced(img, text_lines, name, provenance);
 
         return Some(Rib::from_iban(iban, account_holder, bic));
     };
@@ -78,7 +79,8 @@ pub fn zoom_and_extract(
         if let Some(iban) = extract_iban_in_image(&iban_image, name) {
             provenance.engine = Some(Engine::OcrsCrop);
 
-            let account_holder = zoom_and_extract_account_holder(img, text_lines.clone(), name);
+            let account_holder =
+                zoom_and_extract_account_holder_traced(img, text_lines.clone(), name, provenance);
             let bic = extract_fr_bic(&ocrs_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
@@ -90,7 +92,8 @@ pub fn zoom_and_extract(
         if let Some(iban) = extract_iban_in_image(&iban_image, name) {
             provenance.engine = Some(Engine::OcrsNarrowCrop);
 
-            let account_holder = zoom_and_extract_account_holder(img, text_lines, name);
+            let account_holder =
+                zoom_and_extract_account_holder_traced(img, text_lines, name, provenance);
             let bic = extract_fr_bic(&ocrs_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
@@ -149,7 +152,8 @@ pub fn zoom_and_extract(
             provenance.engine = Some(Engine::TessCrop);
 
             let (ocrs_text, text_lines, _) = ocrs_anchors(&img, &iban_regex, None);
-            let account_holder = zoom_and_extract_account_holder(&img, text_lines, name);
+            let account_holder =
+                zoom_and_extract_account_holder_traced(&img, text_lines, name, provenance);
             let bic = extract_fr_bic(&ocrs_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
@@ -220,13 +224,16 @@ fn text_in_mask(text_lines: &[TextLine], (x, y, w, h): (u32, u32, u32, u32)) -> 
         .join("\n")
 }
 
-
-fn zoom_and_extract_account_holder(
+fn zoom_and_extract_account_holder_traced(
     img: &DynamicImage,
     text_lines: Vec<TextLine>,
     name: &str,
+    provenance: &mut Provenance,
 ) -> Option<String> {
-    let code_postal_line_regex = Regex::new(r"[[:space:]]*\d{5}\s+[[:alpha:]]").unwrap();
+    // Le code postal peut être collé à la ville — « 44800ST HERBLAIN » — selon le
+    // moteur et l'image ; l'espace n'est pas garanti. Le chemin texte le tolère déjà,
+    // le chemin image l'exigeait, et perdait alors toute ancre de titulaire.
+    let code_postal_line_regex = Regex::new(r"[[:space:]]*\d{5}\s*[[:alpha:]]").unwrap();
     let code_postal_word_regex = Regex::new(r"^\d{5}").unwrap();
 
     let postal_anchors = extract_anchors(
@@ -258,6 +265,8 @@ fn zoom_and_extract_account_holder(
     // domiciliation sont écartés d'emblée, ceux dont le voisinage porte une civilité ou
     // un libellé de titulaire passent en premier, et l'examen s'arrête au premier bloc
     // convaincant.
+    provenance.postal_anchors = postal_anchors.len() as u32;
+
     let mut ranked: Vec<(usize, &Anchor, i32)> = postal_anchors
         .iter()
         .enumerate()
@@ -277,9 +286,11 @@ fn zoom_and_extract_account_holder(
         .filter(|(_, _, score)| *score >= 0)
         .collect();
     ranked.sort_by_key(|(_, _, score)| -*score);
+    provenance.holder_candidates = ranked.len() as u32;
 
     let mut account_holders: Vec<String> = Vec::new();
     for (index, anchor, score) in ranked {
+        provenance.holder_blocks_read += 1;
         let text = read_mask(index, anchor.addr_mask(), "addr_mask");
         // un bloc qui se présente comme domiciliation ne devient pas titulaire, même
         // en le recadrant autrement

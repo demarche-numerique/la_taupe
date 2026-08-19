@@ -110,7 +110,32 @@ pub fn extract_anchors(
                 .corners()
                 .map(|point| [point.x.round() as u32, point.y.round() as u32]);
 
-            Anchor::new(Point::new(p3[0], p3[1]), Point::new(p1[0], p1[1]))
+            // Les masques sont des multiples de la largeur de l'ancre. Pour un code
+            // postal collé à sa ville — « 44800ST » — la largeur du mot entier ferait un
+            // masque soixante pour cent trop large, qui empiète sur la colonne voisine :
+            // on ne garde que la largeur du motif reconnu. Mais seulement quand le motif
+            // est ancré en début de mot et bien plus court que lui : l'ancre d'IBAN
+            // « FR76 » suivie du reste doit rester le mot entier, sans quoi le recadrage
+            // étroit de l'IBAN devient minuscule et le rate.
+            let text = word.to_string();
+            let matched = word_regex
+                .find(&text)
+                .filter(|m| m.start() == 0)
+                .map(|m| m.end())
+                .unwrap_or(0);
+            let total = text.chars().count().max(1);
+            let width = p1[0].saturating_sub(p3[0]);
+            let is_postal = matched == 5 && text.chars().take(5).all(|c| c.is_ascii_digit());
+            let matched_width = if is_postal && matched < total {
+                (width as f32 * matched as f32 / total as f32).round() as u32
+            } else {
+                width
+            };
+
+            Anchor::new(
+                Point::new(p3[0], p3[1]),
+                Point::new(p3[0] + matched_width.max(1), p1[1]),
+            )
         })
         .collect::<Vec<Anchor>>()
 }
