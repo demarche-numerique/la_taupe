@@ -15,13 +15,42 @@ pub struct Addr {
     pub addr_type: AddrType,
 }
 
+/// Une raison sociale peut précéder la civilité et fait partie du titulaire.
+fn is_legal_form(line: &str) -> bool {
+    Regex::new(r"(?i)^\s*(SCI|SAS|SASU|SARL|EURL|SA|SNC|SC|ASSOCIATION|ASS|GIE|SEL|SELARL|EARL|GAEC|SCP|SCM|SCEA)\b")
+        .unwrap()
+        .is_match(line)
+}
+
+fn civility_index(lines: &[String]) -> Option<usize> {
+    let civility =
+        Regex::new(r"(?i)(^|\s)(m|monsieur|mr|mademoiselle|ml|mle|mlle|melle|madame|mme)\.?\s")
+            .unwrap();
+
+    lines.iter().position(|line| civility.is_match(line))
+}
+
 impl Addr {
     pub fn lines(&self) -> Vec<String> {
         let header = Regex::new(r"(?i)(titulaire|intitulé|identit[e|é] bancaire)").unwrap();
         let intitule = Regex::new(r"(?i)(intitulé du compte)").unwrap();
 
-        self.inner_lines
-            .clone()
+        // Le bloc est remonté depuis le code postal jusqu'à un mot-clé ou six lignes.
+        // Sans mot-clé, il avale ce qui précède dans la même colonne : référence
+        // client, date d'édition, nom d'agence. La civilité marque le début réel du
+        // titulaire ; seule une raison sociale placée juste au-dessus lui appartient.
+        let start = civility_index(&self.inner_lines)
+            .map(|i| {
+                if i > 0 && is_legal_form(&self.inner_lines[i - 1]) {
+                    i - 1
+                } else {
+                    i
+                }
+            })
+            .unwrap_or(0);
+
+        self.inner_lines[start..]
+            .to_vec()
             .into_iter()
             .map(|line| {
                 if line.contains(':') {
@@ -39,7 +68,10 @@ impl Addr {
 
 pub fn find_account_holder_addr(text: &str) -> Option<Addr> {
     let lines: Vec<&str> = text.split("\n").collect();
-    let code_postal = Regex::new(r"(^| )\d{5} ([[:alpha:]]+ ?)+").unwrap();
+    // Le code postal peut être collé à la ville ou séparé d'elle par un tiret : les
+    // chaînes éditiques bancaires produisent l'un comme l'autre. Sans cette tolérance,
+    // le bloc n'est pas ancré et le repli sur le libellé le tronque.
+    let code_postal = Regex::new(r"(^| )\d{5}( ?- ?| ?)([[:alpha:]]+ ?)+").unwrap();
     let patch_upper_limit =
         Regex::new(r"(?i)(titulaire|intitulé|domiciliation|cadre réservé)").unwrap();
 
@@ -147,6 +179,78 @@ mod tests {
         ];
 
         test_file(path, account_holder);
+    }
+
+    /// Les chaînes éditiques collent parfois le code postal à la ville, ou les séparent
+    /// d'un tiret. Le bloc doit rester ancré.
+    #[test]
+    fn postal_code_glued_or_dashed_still_anchors_the_block() {
+        let glued = "Titulaire du compte\nM MATISSE HENRI\n51 RUE BERNARD ROY\n44100NANTES";
+        let dashed = "Titulaire du compte\nM MATISSE HENRI\n51 RUE BERNARD ROY\n44100 - NANTES";
+
+        assert_eq!(
+            find_account_holder_addr(glued).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "M MATISSE HENRI",
+                "51 RUE BERNARD ROY",
+                "44100NANTES"
+            ]))
+        );
+        assert_eq!(
+            find_account_holder_addr(dashed).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "M MATISSE HENRI",
+                "51 RUE BERNARD ROY",
+                "44100 - NANTES"
+            ]))
+        );
+    }
+
+    /// Sans mot-clé au-dessus du bloc, la remontée avalait la référence client et la
+    /// date d'édition posées dans la même colonne. La civilité borne le titulaire.
+    #[test]
+    fn lines_above_the_civility_are_dropped() {
+        let text = "Ref client 0123456789\nEdite le 12/03/2025\n\nM MATISSE HENRI\n51 RUE BERNARD ROY\n44100 NANTES";
+
+        assert_eq!(
+            find_account_holder_addr(text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "M MATISSE HENRI",
+                "51 RUE BERNARD ROY",
+                "44100 NANTES"
+            ]))
+        );
+    }
+
+    /// Une raison sociale juste au-dessus de la civilité fait partie du titulaire.
+    #[test]
+    fn a_legal_form_above_the_civility_is_kept() {
+        let text = "Titulaire\nSCI LES TILLEULS\nM MATISSE HENRI\n51 RUE BERNARD ROY\n44100 NANTES";
+
+        assert_eq!(
+            find_account_holder_addr(text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "SCI LES TILLEULS",
+                "M MATISSE HENRI",
+                "51 RUE BERNARD ROY",
+                "44100 NANTES"
+            ]))
+        );
+    }
+
+    /// Sans civilité — personne morale seule — rien n'est retiré.
+    #[test]
+    fn without_civility_the_block_is_untouched() {
+        let text = "Titulaire\nSAS HENRI MATISSE\n18 RUE SADI CARNOT\n92120 MONTROUGE";
+
+        assert_eq!(
+            find_account_holder_addr(text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "SAS HENRI MATISSE",
+                "18 RUE SADI CARNOT",
+                "92120 MONTROUGE"
+            ]))
+        );
     }
 
     #[test]
