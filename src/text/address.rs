@@ -75,22 +75,28 @@ pub fn find_account_holder_addr(text: &str) -> Option<Addr> {
     let patch_upper_limit =
         Regex::new(r"(?i)(titulaire|intitulé|domiciliation|cadre réservé)").unwrap();
 
+    // Deux blocs adressés côte à côte — titulaire d'un côté, agence de l'autre — mettent
+    // deux codes postaux sur la même ligne. N'examiner que le premier, c'est ne voir que
+    // le bloc de gauche, et donc rater le titulaire dès qu'il est à droite.
     let patches = lines
         .clone()
         .into_iter()
         .enumerate()
         .flat_map(|(index, line)| {
-            code_postal.find(line).map(|m| {
-                Patch::extract(
-                    &lines,
-                    index,
-                    &patch_upper_limit,
-                    m.start(),
-                    m.end() - 1,
-                    true,
-                    3,
-                )
-            })
+            code_postal
+                .find_iter(line)
+                .map(|m| {
+                    Patch::extract(
+                        &lines,
+                        index,
+                        &patch_upper_limit,
+                        m.start(),
+                        m.end() - 1,
+                        true,
+                        3,
+                    )
+                })
+                .collect::<Vec<Patch>>()
         });
 
     let addresses = patches.map(|p| {
@@ -202,6 +208,28 @@ mod tests {
                 "M MATISSE HENRI",
                 "51 RUE BERNARD ROY",
                 "44100 - NANTES"
+            ]))
+        );
+    }
+
+    /// Titulaire à droite d'une domiciliation qui porte elle aussi un code postal : les
+    /// deux blocs mettent deux codes postaux sur la même ligne, et seul le premier était
+    /// examiné. Le titulaire était systématiquement raté dès qu'il était à droite.
+    #[test]
+    fn a_holder_to_the_right_of_a_branch_address_is_found() {
+        let text = "\
+  Domiciliation                             Titulaire du compte (Account Owner)
+  CIC NANTES VOLTAIRE                       MLE PRENOM NOM
+  4 RUE VOLTAIRE                            9 RUE UN NOM EN PLUSIEURS MOT
+  44000 NANTES                              44100 NANTES
+  tel";
+
+        assert_eq!(
+            find_account_holder_addr(text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "MLE PRENOM NOM",
+                "9 RUE UN NOM EN PLUSIEURS MOT",
+                "44100 NANTES"
             ]))
         );
     }

@@ -78,11 +78,24 @@ fn clean(lines: Vec<String>) -> Option<Vec<String>> {
     )
     .unwrap();
 
+    // Le libellé peut être en tête de la ligne du nom sans deux-points pour les
+    // séparer : « TITULAIRE DU MME PRENOM NOM ». Jeter la ligne entière parce qu'elle
+    // porte le libellé, c'est jeter le titulaire avec. On retire le libellé, on garde
+    // le reste.
+    // Le libellé peut être suivi de sa traduction : « Titulaire du compte - Account
+    // Owner ». Elle est retirée avec lui.
+    let label_prefix = Regex::new(
+        r"(?i)^\s*(titulaire|intitul[eé])(\s+du|\s+de)?(\s+compte)?\s*([:\-/]\s*)?(\(?account\s+(owner|holder)\)?)?\s*[:\-]?\s*",
+    )
+    .unwrap();
+
     let vec: Vec<String> = lines
         .into_iter()
         .map(|line| {
             if account_holder.is_match(&line) && line.contains(':') {
                 line.split(':').nth(1).unwrap().to_string()
+            } else if account_holder.is_match(&line) {
+                label_prefix.replace(&line, "").to_string()
             } else {
                 line
             }
@@ -143,6 +156,19 @@ mod tests {
         assert_eq!(
             find_simple_account_holder(text, 3).as_deref(),
             Some("M MATISSE HENRI\n51 RUE BERNARD ROY")
+        );
+    }
+
+    /// Le libellé peut précéder le nom sur la même ligne, sans deux-points ; et se
+    /// poursuivre sur la ligne suivante (« TITULAIRE DU » / « COMPTE : »). Le titulaire
+    /// commence alors à droite du libellé, sur les deux lignes.
+    #[test]
+    fn a_label_split_over_two_lines_keeps_both_holder_lines() {
+        let text = "RELEVE D IDENTITE BANCAIRE\n\nTITULAIRE DU MME PRENOM NOM OU M\nCOMPTE :     PRENOM2 NOM2\n\nIBAN FR76";
+
+        assert_eq!(
+            find_simple_account_holder(text, 3).as_deref(),
+            Some("MME PRENOM NOM OU M\nPRENOM2 NOM2")
         );
     }
 
