@@ -63,7 +63,7 @@ pub fn zoom_and_extract(
 
         provenance.engine = Some(Engine::OcrsPage);
 
-        let bic = extract_fr_bic(&ocrs_text);
+        let bic = extract_fr_bic(&ocrs_text, Some(&iban));
         let account_holder = zoom_and_extract_account_holder(img, text_lines, name);
 
         return Some(Rib::from_iban(iban, account_holder, bic));
@@ -78,7 +78,7 @@ pub fn zoom_and_extract(
             provenance.engine = Some(Engine::OcrsCrop);
 
             let account_holder = zoom_and_extract_account_holder(img, text_lines.clone(), name);
-            let bic = extract_fr_bic(&ocrs_text);
+            let bic = extract_fr_bic(&ocrs_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -90,7 +90,7 @@ pub fn zoom_and_extract(
             provenance.engine = Some(Engine::OcrsNarrowCrop);
 
             let account_holder = zoom_and_extract_account_holder(img, text_lines, name);
-            let bic = extract_fr_bic(&ocrs_text);
+            let bic = extract_fr_bic(&ocrs_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -129,7 +129,7 @@ pub fn zoom_and_extract(
 
             let (ocrs_text, text_lines, _) = ocrs_anchors(&img, &iban_regex, None);
             let account_holder = zoom_and_extract_account_holder(&img, text_lines, name);
-            let bic = extract_fr_bic(&ocrs_text);
+            let bic = extract_fr_bic(&ocrs_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }

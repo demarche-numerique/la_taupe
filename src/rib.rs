@@ -32,20 +32,10 @@ impl Rib {
             .map(|addr| addr.lines().join("\n"))
             .or_else(|| find_simple_account_holder(&text, 3));
 
-        let bic = extract_fr_bic(&text);
+        let iban = extract_iban(&text)?;
+        let bic = extract_fr_bic(&text, Some(&iban));
 
-        if let Some(iban) = extract_iban(&text) {
-            let bank_name = IbanToBankName::new().bank_name(&iban);
-
-            Some(Rib {
-                account_holder,
-                iban,
-                bic,
-                bank_name,
-            })
-        } else {
-            None
-        }
+        Some(Rib::from_iban(iban, account_holder, bic))
     }
 
     pub fn iban(&self) -> &str {
@@ -273,19 +263,34 @@ pub fn extract_iban(text: &str) -> Option<String> {
     }
 }
 
-pub fn extract_fr_bic(content: &str) -> Option<String> {
+/// Écarte les candidats qui ne sont qu'un fragment de l'IBAN voisin.
+///
+/// Le motif `[A-Z]{4}FR[A-Z0-9]{2}` capture quatre lettres quelconques suivies du début
+/// de l'IBAN : « NBICFR67190 » sur un IBAN commençant par FR67190. Le libellé collé à sa
+/// valeur suffit à le produire, et la passe sans espaces le provoque systématiquement.
+///
+/// Le candidat était alors soit retourné tel quel quand le vrai BIC avait été mal lu,
+/// soit rejeté avec lui pour cause d'ambiguïté. Ce qui suit le code établissement doit
+/// être un code pays, pas la suite d'un numéro de compte.
+fn is_iban_fragment(candidate: &str, iban: &str) -> bool {
+    let candidate = normalize_iban(candidate);
+
+    candidate.len() > 4 && normalize_iban(iban).starts_with(&candidate[4..])
+}
+
+/// `iban`, lorsqu'il est connu, sert à écarter les faux candidats qu'il engendre.
+pub fn extract_fr_bic(content: &str, iban: Option<&str>) -> Option<String> {
     let fr_without_space = Regex::new(r"[A-Z]{4}FR[A-Z0-9]{2}([A-Z0-9]{3})?").unwrap();
     let fr_with_xxx_with_space = Regex::new(r"[A-Z]{4}\s?FR\s?[A-Z0-9]{2}\s?XXX?").unwrap();
 
-    // Helper to get unique matches
-    fn get_unique_matches(regex: &Regex, text: &str) -> Vec<String> {
-        let matches: Vec<String> = regex
+    let get_unique_matches = |regex: &Regex, text: &str| -> Vec<String> {
+        regex
             .find_iter(text)
             .map(|m| m.as_str().to_string())
+            .filter(|candidate| !iban.is_some_and(|iban| is_iban_fragment(candidate, iban)))
             .unique()
-            .collect();
-        matches.into_iter().collect()
-    }
+            .collect()
+    };
 
     let mut fr_without_space_matches = get_unique_matches(&fr_without_space, content);
     log::trace!("fr_without_space_matches: {:?}", fr_without_space_matches);
@@ -384,6 +389,50 @@ mod tests {
         );
 
         assert_eq!(iban_from_bban("trop court"), None);
+    }
+
+    /// Le motif du BIC attrape quatre lettres quelconques suivies du début de l'IBAN.
+    /// Connaître l'IBAN suffit à les distinguer d'un vrai code établissement.
+    #[test]
+    fn iban_fragments_are_not_mistaken_for_a_bic() {
+        let iban = "FR6719069478526623075402Z93";
+
+        // observés sur corpus : le libellé collé à sa valeur produit ces candidats
+        assert!(is_iban_fragment("NBICFR67190", iban));
+        assert!(is_iban_fragment("DGARFR67190", iban));
+
+        // un vrai BIC ne prolonge pas l'IBAN
+        assert!(!is_iban_fragment("PSSTFRPPNTE", iban));
+        assert!(!is_iban_fragment("CMCIFR2A", iban));
+        assert!(!is_iban_fragment("SOGEFRPP", iban));
+    }
+
+    #[test]
+    fn bic_is_extracted_despite_a_glued_label() {
+        let iban = "FR6719069478526623075402Z93";
+
+        // le vrai BIC coexiste avec le faux candidat : renoncer serait perdre les deux
+        let text = "IBANFR6719069478526623075402Z93 BIC PSSTFRPPNTE";
+        assert_eq!(
+            extract_fr_bic(text, Some(iban)).as_deref(),
+            Some("PSSTFRPPNTE")
+        );
+
+        // le vrai BIC est illisible : mieux vaut ne rien rendre qu'un fragment d'IBAN
+        let text = "IBANFR6719069478526623075402Z93 BIC PS5TFRPP";
+        assert_eq!(extract_fr_bic(text, Some(iban)), None);
+    }
+
+    #[test]
+    fn bic_extraction_still_works_without_an_iban() {
+        assert_eq!(
+            extract_fr_bic("BIC AGRIFRPP847", None).as_deref(),
+            Some("AGRIFRPP847")
+        );
+        assert_eq!(
+            extract_fr_bic("BIC BOUS FRPP XXX", None).as_deref(),
+            Some("BOUS FRPP XXX")
+        );
     }
 
     #[test]
