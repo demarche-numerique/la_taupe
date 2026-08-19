@@ -6,6 +6,7 @@ pub mod http;
 pub mod image_utils;
 pub mod ocr;
 pub mod ocrs;
+pub mod provenance;
 pub mod rib;
 pub mod shapes;
 pub mod tesseract;

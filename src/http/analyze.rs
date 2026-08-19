@@ -113,7 +113,26 @@ async fn handle_response(mut resp: Response, hint: Option<Hint>) -> HttpResponse
             });
     }
 
-    match Analysis::try_from((bytes, hint, "remote_file")) {
+    // L'analyse dure de quelques secondes à plusieurs dizaines : la laisser dans le
+    // futur bloquerait un worker actix et toutes les connexions qu'il multiplexe.
+    // web::block la porte sur le pool de threads bloquants.
+    let outcome = web::block(move || Analysis::try_from((bytes, hint, "remote_file"))).await;
+
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            log::error!("analysis task failed: {}", e);
+            return HttpResponse::InternalServerError()
+                .content_type(ContentType::json())
+                .json(AnalysisError {
+                    upstream_status_code: None,
+                    upstream_body: None,
+                    body: Some("analysis task failed".to_string()),
+                });
+        }
+    };
+
+    match outcome {
         Ok(analysis) => HttpResponse::Ok()
             .content_type(ContentType::json())
             .json(analysis),

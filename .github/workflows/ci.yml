@@ -33,7 +33,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check with Clippy
-        run: cargo clippy
+        run: cargo clippy --all-features --all-targets
 
   test:
     name: cargo test
