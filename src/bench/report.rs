@@ -68,6 +68,8 @@ pub struct FileReport {
     pub failure: Option<Failure>,
     /// Comptages de forme du texte reconnu — jamais le texte.
     pub text_stats: Option<TextStats>,
+    /// La garde « rien à lire » se déclencherait sur ce document.
+    pub unreadable: bool,
     /// Nature de l'écart quand le titulaire est faux.
     pub holder_mismatch: Option<HolderMismatch>,
 }
@@ -104,6 +106,10 @@ impl FileReport {
             poppler_ms: provenance.timings.poppler.as_millis() as u64,
             failure: None,
             text_stats: provenance.page_text_stats.clone(),
+            unreadable: provenance
+                .page_text_stats
+                .as_ref()
+                .is_some_and(|s| s.is_unreadable()),
             holder_mismatch: None,
         }
     }
@@ -363,6 +369,16 @@ impl Report {
             ));
         }
 
+        let unreadable: Vec<&FileReport> = self.files.iter().filter(|f| f.unreadable).collect();
+        if !unreadable.is_empty() {
+            let with_iban = unreadable.iter().filter(|f| f.iban.is_ok()).count();
+            out.push_str(&format!(
+                "\n  {} document(s) jugés illisibles par la garde ({} avaient pourtant un IBAN juste)\n",
+                unreadable.len(),
+                with_iban
+            ));
+        }
+
         let known: Vec<&FileReport> = self.files.iter().filter(|f| f.known_failure).collect();
         if !known.is_empty() {
             let unexpected = known.iter().filter(|f| f.iban.is_ok()).count();
@@ -543,6 +559,7 @@ mod tests {
             poppler_ms: 0,
             failure: None,
             text_stats: None,
+            unreadable: false,
             holder_mismatch: None,
         }
     }

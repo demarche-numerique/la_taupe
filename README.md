@@ -36,6 +36,22 @@ place n'en récupère que trois — deux tailles d'un même modèle partagent le
 redondance qui paie vient d'un moteur d'une autre famille.
 
 Rust 1.95 minimum (`rust-toolchain.toml`), exigé par `oar-ocr`.
+## Référentiels embarqués
+
+Deux fichiers de référence sont compilés dans le binaire (`include_str!`) :
+
+- `src/riad_bank_name.csv` — code banque → BIC, nom ; extrait de la liste des IFM de la
+  BCE. Donne le nom de la banque et valide le code établissement du BIC contre le code
+  banque de l'IBAN.
+- `src/code_postal_commune.csv` — code postal → libellé d'acheminement ; extrait de la
+  Base officielle des codes postaux de La Poste (Licence Ouverte 2.0). Corrige la ligne
+  de ville d'un titulaire quand le code postal est sûr et la ville approchante.
+
+`./scripts/update-references.sh` les rafraîchit tous les deux : il trouve la dernière
+édition BCE, fusionne en gardant le BIC précédent quand la nouvelle édition l'a vidé
+(la BCE cesse d'en maintenir certains d'une édition à l'autre), et affiche ce qui change
+avant de remplacer. À lancer de temps en temps, puis `git diff` et commit.
+
 ## Banc de mesure
 
 Le pipeline de reconnaissance de RIB enchaîne plusieurs stratégies (texte du PDF,
@@ -151,6 +167,25 @@ même modèle partagent leurs erreurs.
 latence.
 
 **PP-OCR v5 server** : 42 secondes la page en CPU.
+
+**Ancrer le titulaire sur la civilité** (« M », « MME », « Monsieur »… en tête de
+ligne), quand ni code postal ni libellé « titulaire » ne le localisent. Le repère est
+juste : sur les trois photos réelles sans titulaire, il trouve le bloc à chaque fois.
+Mais aucun des trois n'est exact — un nom à un ou deux caractères près, une adresse
+fausse sous un nom juste, un bloc incomplet — et le taux de titulaires justes ne bouge
+pas. Retiré, par choix : **ne rien rendre plutôt qu'un bloc douteux**, comme pour le
+BIC. À reprendre si un référentiel (communes, voies) permet de valider le bloc trouvé.
+
+**Localiser le bloc titulaire par NER zéro-shot** (GLiNER, `gliner_multi_pii-v1`,
+289 M paramètres, via gline-rs). Le modèle voit la ligne du nom sur 72 à 85 % des
+documents, mais ne sait pas borner le bloc dans le texte linéarisé : sur le bloc
+complet il fait moitié moins bien que la cascade, sur chaque corpus. En repli quand la
+cascade ne rend rien, il rendrait plus de blocs faux que de justes. S'y ajoutent
+1,1 Go de modèle (l'export int8 de 332 Mo ne rend aucune entité), 0,4 à 0,9 s par
+document, et un conflit de version ONNX Runtime avec oar-ocr. L'évaluation complète
+est rejouable dans `gitignored/gliner_eval/`. Contre-essai avec un NER français
+supervisé (`camembert-ner`, 110 M paramètres) : pire sur tout sauf la latence — la
+prose de Wikipédia ne prépare pas aux blocs en capitales des RIB.
 
 ## Ce qu'il faut savoir pour mesurer
 

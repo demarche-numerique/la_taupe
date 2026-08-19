@@ -149,6 +149,22 @@ pub fn extract_anchors(
     word_regex: &Regex,
     line_regex: Option<&Regex>,
 ) -> Vec<Anchor> {
+    // Une ancre est un mot sur une ligne de texte. Le détecteur fusionne parfois une
+    // colonne entière en une seule « ligne » : l'ancre y fait dix à vingt fois la
+    // hauteur d'une ligne, et tous les masques, multiples de cette hauteur, deviennent
+    // démesurés et tombent à côté. Une ancre plus de trois fois plus haute que la ligne
+    // médiane de la page n'est pas une ligne de texte : on l'écarte, la suivante prendra.
+    let mut heights: Vec<i32> = text_lines
+        .iter()
+        .map(|l| l.bounding_rect().height())
+        .filter(|h| *h > 0)
+        .collect();
+    heights.sort_unstable();
+    let max_height = heights
+        .get(heights.len() / 2)
+        .map(|median| median * 3)
+        .unwrap_or(i32::MAX);
+
     text_lines
         .iter()
         .filter(|line| {
@@ -157,6 +173,7 @@ pub fn extract_anchors(
             }
             line_regex.unwrap().is_match(&line.to_string())
         })
+        .filter(|line| line.bounding_rect().height() <= max_height)
         .flat_map(|line| line.words().collect::<Vec<TextWord>>())
         .filter(|word| word_regex.is_match(&word.to_string()))
         .map(|word| {
@@ -209,6 +226,26 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    /// Une « ligne » de la hauteur d'une colonne n'est pas une ligne : son FR76 n'est
+    /// pas une ancre, et le FR76 de la vraie ligne suivante l'est.
+    #[test]
+    fn oversized_lines_do_not_anchor() {
+        let re = Regex::new(r"(?:^|\s)FR[\dO]").unwrap();
+        let lines = vec![
+            line("Titulaire", 100, 20),
+            line("M MATISSE", 130, 20),
+            line("FR76 3000 colonne fusionnee", 160, 700),
+            line("FR76 1234", 900, 22),
+            line("BIC", 930, 20),
+        ];
+
+        let anchors = extract_anchors(lines, &re, None);
+
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].top_left.y, 900);
+        assert!(anchors[0].height < 30);
     }
 
     #[test]

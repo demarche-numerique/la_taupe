@@ -22,7 +22,13 @@ pub enum Analysis {
         rib: Option<Rib>,
     },
     #[serde(rename = "rib")]
-    Rib { rib: Option<Rib> },
+    Rib {
+        rib: Option<Rib>,
+        /// Présent et vrai quand l'image ne contenait rien de lisible : distingue
+        /// « pas de RIB » de « rien à lire ». Absent du JSON dans tous les autres cas.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unreadable: bool,
+    },
     #[serde(rename = "2ddoc")]
     Ddoc {
         #[serde(rename = "2ddoc")]
@@ -121,9 +127,15 @@ impl TryFrom<(Vec<u8>, Option<Hint>, &str)> for Analysis {
     fn try_from((content, hint, name): (Vec<u8>, Option<Hint>, &str)) -> Result<Self, String> {
         match hint {
             Some(Hint::Type(Type::Rib)) => {
-                let rib = vec_to_rib(content, name)?;
+                let mut provenance = Provenance::default();
+                let rib = vec_to_rib_traced(content, name, &mut provenance)?;
+                let unreadable = rib.is_none()
+                    && provenance
+                        .page_text_stats
+                        .as_ref()
+                        .is_some_and(|s| s.is_unreadable());
 
-                Ok(Analysis::Rib { rib })
+                Ok(Analysis::Rib { rib, unreadable })
             }
             Some(Hint::Type(Type::Twoddoc)) => {
                 let ddoc = vec_to_ddoc(content)?;
@@ -151,5 +163,39 @@ impl TryFrom<(&Path, Option<Hint>)> for Analysis {
         let content =
             std::fs::read(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
         Analysis::try_from((content, hint, base_name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Le champ n'apparaît que quand il est vrai : le JSON des clients existants ne
+    /// change pas d'un octet.
+    #[test]
+    fn unreadable_is_absent_from_json_unless_true() {
+        let plain = serde_json::to_string(&Analysis::Rib {
+            rib: None,
+            unreadable: false,
+        })
+        .unwrap();
+        assert_eq!(plain, r#"{"hint":"rib","rib":null}"#);
+
+        let flagged = serde_json::to_string(&Analysis::Rib {
+            rib: None,
+            unreadable: true,
+        })
+        .unwrap();
+        assert!(flagged.contains(r#""unreadable":true"#));
+
+        // et on relit l'ancien format sans le champ
+        let back: Analysis = serde_json::from_str(&plain).unwrap();
+        assert!(matches!(
+            back,
+            Analysis::Rib {
+                rib: None,
+                unreadable: false
+            }
+        ));
     }
 }

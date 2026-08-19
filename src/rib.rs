@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     fi_extract::IbanToBankName,
-    text::{address::find_account_holder_addr, simple_account_holder::find_simple_account_holder},
+    text::{
+        address::find_account_holder_addr, communes::fix_holder_city,
+        simple_account_holder::find_simple_account_holder,
+    },
 };
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -19,6 +22,10 @@ pub struct Rib {
 impl Rib {
     pub fn from_iban(iban: String, account_holder: Option<String>, bic: Option<String>) -> Self {
         let bank_name = IbanToBankName::new().bank_name(&iban);
+
+        // la ligne de ville du titulaire est la plus souvent hachée par l'OCR ; le
+        // code postal, lui, tient, et le référentiel des communes recoupe
+        let account_holder = account_holder.map(|h| fix_holder_city(&h));
 
         Rib {
             account_holder,
@@ -278,16 +285,71 @@ fn is_iban_fragment(candidate: &str, iban: &str) -> bool {
     candidate.len() > 4 && normalize_iban(iban).starts_with(&candidate[4..])
 }
 
-/// `iban`, lorsqu'il est connu, sert à écarter les faux candidats qu'il engendre.
+/// Recolle un BIC imprimé dans un tableau à une lettre par cellule.
+///
+/// L'OCR rend les cellules comme des mots courts, partiellement fusionnés — « Ps sƫ FRP
+/// P NƫE » — et le motif du BIC ne voit jamais la suite entière. Sur chaque ligne, une
+/// série de mots d'un à trois caractères alphanumériques dont le total atteint huit
+/// lettres est refermée en un mot ; le reste est conservé tel quel. Le trait vertical
+/// d'une cellule collé à un T donne « ƫ » : normalisé.
+pub fn join_cell_letters(text: &str) -> String {
+    let text = text.replace(['ƫ', 'Ƭ', 'ŧ', 'Ŧ'], "T");
+
+    text.lines()
+        .map(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let mut out: Vec<String> = Vec::new();
+            let mut i = 0;
+            while i < words.len() {
+                // un mot court, mais pas le libellé « BIC » ni « IBAN » eux-mêmes
+                let is_cell = |w: &str| {
+                    let n = w.chars().count();
+                    (1..=3).contains(&n)
+                        && w.chars().all(|c| c.is_ascii_alphanumeric())
+                        && !w.eq_ignore_ascii_case("BIC")
+                };
+                let run_end = (i..words.len())
+                    .take_while(|&j| is_cell(words[j]))
+                    .last()
+                    .map(|j| j + 1)
+                    .unwrap_or(i);
+                let total: usize = words[i..run_end].iter().map(|w| w.chars().count()).sum();
+                if run_end - i >= 3 && total >= 8 {
+                    out.push(words[i..run_end].concat().to_uppercase());
+                    i = run_end;
+                } else {
+                    out.push(words[i].to_string());
+                    i += 1;
+                }
+            }
+            out.join(" ")
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// `iban`, lorsqu'il est connu, sert deux fois : à écarter les fragments d'IBAN que le
+/// motif prend pour un BIC, et — via le registre BCE — à n'accepter qu'un BIC dont le
+/// code établissement concorde avec le code banque. Le BIC n'a aucune redondance
+/// interne ; ce recoupement est la seule validation possible, et il rejette un candidat
+/// lu à une lettre près (« PSSTFRPPNTH ») comme un candidat fabriqué de toutes pièces.
+/// Quand le registre ne connaît pas l'établissement, on ne filtre pas.
 pub fn extract_fr_bic(content: &str, iban: Option<&str>) -> Option<String> {
     let fr_without_space = Regex::new(r"[A-Z]{4}FR[A-Z0-9]{2}([A-Z0-9]{3})?").unwrap();
     let fr_with_xxx_with_space = Regex::new(r"[A-Z]{4}\s?FR\s?[A-Z0-9]{2}\s?XXX?").unwrap();
+
+    let expected_prefix = iban.and_then(|iban| IbanToBankName::new().expected_bic_prefix(iban));
 
     let get_unique_matches = |regex: &Regex, text: &str| -> Vec<String> {
         regex
             .find_iter(text)
             .map(|m| m.as_str().to_string())
             .filter(|candidate| !iban.is_some_and(|iban| is_iban_fragment(candidate, iban)))
+            .filter(|candidate| {
+                expected_prefix
+                    .as_ref()
+                    .is_none_or(|prefix| normalize_iban(candidate).starts_with(prefix.as_str()))
+            })
             .unique()
             .collect()
     };
@@ -412,15 +474,58 @@ mod tests {
         let iban = "FR6719069478526623075402Z93";
 
         // le vrai BIC coexiste avec le faux candidat : renoncer serait perdre les deux
-        let text = "IBANFR6719069478526623075402Z93 BIC PSSTFRPPNTE";
+        // (19069 est KBLX au registre)
+        let text = "IBANFR6719069478526623075402Z93 BIC KBLXFRPPXXX";
         assert_eq!(
             extract_fr_bic(text, Some(iban)).as_deref(),
-            Some("PSSTFRPPNTE")
+            Some("KBLXFRPPXXX")
         );
 
         // le vrai BIC est illisible : mieux vaut ne rien rendre qu'un fragment d'IBAN
-        let text = "IBANFR6719069478526623075402Z93 BIC PS5TFRPP";
+        let text = "IBANFR6719069478526623075402Z93 BIC KB1XFRPP";
         assert_eq!(extract_fr_bic(text, Some(iban)), None);
+    }
+
+    /// Un BIC en tableau, une lettre par cellule, doit être recollé — et seulement lui :
+    /// les mots ordinaires de la ligne restent séparés.
+    #[test]
+    fn cell_letters_are_joined_into_a_bic() {
+        assert_eq!(
+            join_cell_letters("BIC P S S T F R P P N T E"),
+            "BIC PSSTFRPPNTE"
+        );
+        assert_eq!(
+            join_cell_letters("C E P A F R P P 4 4 4 Code"),
+            "CEPAFRPP444 Code"
+        );
+        // cellules partiellement fusionnées, trait collé au T
+        assert_eq!(join_cell_letters("Ps sƫ FRP P NƫE"), "PSSTFRPPNTE");
+        // trop court pour être un BIC : on ne recolle pas
+        assert_eq!(join_cell_letters("M OU MME X"), "M OU MME X");
+        // et le motif s'y applique ensuite
+        assert_eq!(
+            extract_fr_bic(&join_cell_letters("BIC\nP S S T F R P P N T E"), None).as_deref(),
+            Some("PSSTFRPPNTE")
+        );
+    }
+
+    /// Avec l'IBAN, le registre dit quel code établissement attendre : un BIC d'une
+    /// autre banque, ou lu à une lettre près sur ses quatre premières, est écarté.
+    #[test]
+    fn bic_must_match_the_bank_of_the_iban() {
+        // 42529 = Edmond de Rothschild, BIC COFIFRCPXXX au registre
+        let iban = "FR7642529000010000000000000";
+        assert_eq!(
+            extract_fr_bic("BIC COFIFRCPXXX", Some(iban)).as_deref(),
+            Some("COFIFRCPXXX")
+        );
+        // un BIC d'une autre banque sur la page — ou un faux — est rejeté
+        assert_eq!(extract_fr_bic("BIC SOGEFRPP", Some(iban)), None);
+        // sans IBAN, pas de filtre
+        assert_eq!(
+            extract_fr_bic("BIC SOGEFRPP", None).as_deref(),
+            Some("SOGEFRPP")
+        );
     }
 
     #[test]

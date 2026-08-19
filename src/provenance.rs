@@ -213,11 +213,37 @@ impl TextStats {
     }
 }
 
+impl TextStats {
+    /// Vrai quand la première lecture n'a presque rien rendu : trop peu de caractères
+    /// et aucun terme de RIB. Le document n'est pas un RIB mal lu, c'est une image sur
+    /// laquelle il n'y a rien à lire — vignette perdue dans une page blanche, photo
+    /// illisible. Le dire vaut mieux que rendre un vide indiscernable d'un RIB absent.
+    pub fn is_unreadable(&self) -> bool {
+        self.digits + self.alphas < 20 && self.vocabulary_hits == 0 && !self.has_iban_prefix
+    }
+}
+
 impl Provenance {
     pub fn route(route: Route) -> Self {
         Provenance {
             route: Some(route),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_read_is_unreadable_a_real_rib_is_not() {
+        assert!(TextStats::of("R.\n|\n~").is_unreadable());
+        assert!(TextStats::of("").is_unreadable());
+        assert!(
+            !TextStats::of("Titulaire du compte\nM MATISSE HENRI\n44100 NANTES").is_unreadable()
+        );
+        // peu de texte mais un préfixe d'IBAN : on a peut-être juste mal lu
+        assert!(!TextStats::of("FR76 3000").is_unreadable());
     }
 }
