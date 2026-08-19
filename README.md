@@ -183,7 +183,9 @@ complet il fait moitié moins bien que la cascade, sur chaque corpus. En repli q
 cascade ne rend rien, il rendrait plus de blocs faux que de justes. S'y ajoutent
 1,1 Go de modèle (l'export int8 de 332 Mo ne rend aucune entité), 0,4 à 0,9 s par
 document, et un conflit de version ONNX Runtime avec oar-ocr. L'évaluation complète
-est rejouable dans `gitignored/gliner_eval/`.
+est rejouable dans `gitignored/gliner_eval/`. Contre-essai avec un NER français
+supervisé (`camembert-ner`, 110 M paramètres) : pire sur tout sauf la latence — la
+prose de Wikipédia ne prépare pas aux blocs en capitales des RIB.
 
 ## Ce qu'il faut savoir pour mesurer
 
