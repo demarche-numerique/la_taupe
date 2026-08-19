@@ -9,8 +9,36 @@ L'exemple justificatif_de_domicile.png est issu de leur "Spécifications Techniq
 
 ## Installation
 
-ocrs est utilisé pour l'OCR, il est nécessaire de télécharger ses models avant utilisation: ./download_models.sh .
-Cette opération est faite automatiquement lors du build en mode release.
+Deux moteurs OCR sont disponibles ; PP-OCR est le moteur par défaut.
+
+**PP-OCR** (PaddleOCR v6 tiny, via [`oar-ocr`](https://crates.io/crates/oar-ocr) et
+ONNX Runtime, CPU seul). Mesuré sur les deux corpus réels contre ocrs : meilleur sur
+tous les champs, deux fois moins de titulaires faux sur les photos, médiane divisée par
+3,4.
+
+Le binaire est **autonome** : les modèles (6 Mo) sont téléchargés au build par
+`./download-models.sh` et embarqués par `include_bytes!`, ONNX Runtime est lié
+statiquement. Rien n'est téléchargé à l'exécution — une prod hors ligne n'a rien à
+pré-charger. Seule la **machine de build** a besoin du réseau, une fois : les modèles
+vont dans `models/`, l'archive ONNX Runtime (~90 Mo) dans `~/.cache/ort.pyke.io/`, et
+les deux sont réutilisés aux builds suivants. Pour un build sans réseau du tout, `ort`
+lit `ORT_LIB_LOCATION` pointant sur une archive `libonnxruntime.a` fournie.
+
+`LA_TAUPE_PPOCR_MODEL_DIR` pointe un répertoire `det.onnx` / `rec.onnx` / `dict.txt`
+pour essayer un autre jeu de modèles sans rebuild. Sur les corpus réels, v6 small lit
+deux BIC de plus sur les photos mais perd sur le titulaire et coûte le double ; v5
+server met quarante secondes la page en CPU.
+
+**ocrs** reste embarqué et se sélectionne par `LA_TAUPE_OCR_ENGINE=ocrs`. Ses modèles
+sont téléchargés au build en mode release (`./download_models.sh`).
+
+**tesseract** (`tesseract-ocr-fra`, dépendance système) sert de second avis sur les
+recadrages que le moteur principal ne lit pas. Il est irremplaçable : mesuré sans lui,
+l'IBAN des photos perd trois documents sur trente-deux, et un second modèle PP-OCR à sa
+place n'en récupère qu'un — deux tailles d'un même modèle partagent leurs erreurs, la
+redondance qui paie vient d'un moteur d'une autre famille.
+
+Rust 1.95 minimum (`rust-toolchain.toml`), exigé par `oar-ocr`.
 ## Banc de mesure
 
 Le pipeline de reconnaissance de RIB enchaîne plusieurs stratégies (texte du PDF,

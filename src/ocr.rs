@@ -402,23 +402,39 @@ fn bytes_to_img(content: Vec<u8>) -> Option<DynamicImage> {
     Some(img.into_luma8().into())
 }
 
+/// Lit l'IBAN dans un recadrage, avec les deux moteurs disponibles.
+///
+/// L'ordre dépend du moteur en service. Avec ocrs, tesseract passe en premier — c'est
+/// l'ordre historique, et sur les recadrages ocrs n'est pas meilleur. Avec PP-OCR, il
+/// passe en premier : il lit ces recadrages plus souvent et bien plus vite que
+/// tesseract, qui ne sert plus que de repli. Ce repli reste : mesuré sans lui, l'IBAN
+/// des photos perd trois documents sur trente-deux, et un second modèle PP-OCR à sa
+/// place n'en récupère qu'un — deux tailles d'un même modèle partagent leurs erreurs.
 fn extract_iban_in_image(cropped_img: &DynamicImage, name: &str) -> Option<String> {
-    let tess_iban = img_to_string_using_tesseract(cropped_img.clone());
-    if let Some(iban) = extract_iban(&tess_iban) {
-        return Some(iban);
+    let read_ocr = || image_to_string_using_ocrs(cropped_img.clone());
+    let read_tess = || img_to_string_using_tesseract(cropped_img.clone());
+
+    let ppocr_first = crate::ocrs::selected_engine() == crate::ocrs::Engine::PpOcr;
+
+    let (first_text, second_text) = if ppocr_first {
+        let ocr = read_ocr();
+        if let Some(iban) = extract_iban(&ocr) {
+            return Some(iban);
+        }
+        (ocr, read_tess())
+    } else {
+        let tess = read_tess();
+        if let Some(iban) = extract_iban(&tess) {
+            return Some(iban);
+        }
+        (tess, read_ocr())
     };
 
-    let ocrs_iban = image_to_string_using_ocrs(cropped_img.clone());
-    if let Some(iban) = extract_iban(&ocrs_iban) {
+    if let Some(iban) = extract_iban(&second_text) {
         return Some(iban);
-    };
+    }
 
-    log::trace!(
-        "not found for {}: tess_iban: {}, ocrs_iban: {}",
-        name,
-        tess_iban,
-        ocrs_iban
-    );
+    log::trace!("not found for {}: {} / {}", name, first_text, second_text);
 
     None
 }

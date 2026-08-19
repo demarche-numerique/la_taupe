@@ -99,7 +99,7 @@ impl Degradation {
     pub fn recipe(&self) -> String {
         let mut parts = vec![format!("h{}", self.cap_height)];
 
-        if self.quarter_turns % 4 != 0 {
+        if !self.quarter_turns.is_multiple_of(4) {
             parts.push(format!("turn{}", 90 * (self.quarter_turns % 4) as u16));
         }
         if self.rotation_deg != 0.0 {

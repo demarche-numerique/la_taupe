@@ -36,9 +36,30 @@ fn engine() -> &'static OcrEngine {
     })
 }
 
-/// Détecte les mots, les groupe en lignes et les reconnaît.
+/// Moteur en service, choisi par `LA_TAUPE_OCR_ENGINE` : `ppocr` (défaut) ou `ocrs`.
+/// Un seul point de décision, pour que toute la cascade bascule d'un coup et que les
+/// deux moteurs se mesurent sur le même binaire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    Ocrs,
+    PpOcr,
+}
+
+pub fn selected_engine() -> Engine {
+    static SELECTED: OnceLock<Engine> = OnceLock::new();
+
+    *SELECTED.get_or_init(|| match std::env::var("LA_TAUPE_OCR_ENGINE").as_deref() {
+        Ok("ocrs") => Engine::Ocrs,
+        _ => Engine::PpOcr,
+    })
+}
+
+/// Détecte les mots, les groupe en lignes et les reconnaît, avec le moteur en service.
 pub fn recognize(img: &DynamicImage) -> Vec<TextLine> {
-    crate::timing::measure(crate::timing::ocrs, || recognize_inner(img))
+    match selected_engine() {
+        Engine::PpOcr => crate::ppocr::recognize(img),
+        Engine::Ocrs => crate::timing::measure(crate::timing::ocrs, || recognize_inner(img)),
+    }
 }
 
 fn recognize_inner(img: &DynamicImage) -> Vec<TextLine> {
