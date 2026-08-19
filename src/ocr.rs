@@ -6,11 +6,11 @@ use ocrs::{TextItem, TextLine};
 use regex::Regex;
 
 use crate::{
-    image_utils::{clean_image, only_rotate, resize, rotate, save_image_in_debug},
+    image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
     ocrs::{extract_anchors, image_to_string_using_ocrs, ocrs_anchors},
     provenance::{AnchorSource, Engine, Provenance},
     rib::{extract_fr_bic, extract_iban, Rib},
-    shapes::Anchor,
+    shapes::{Anchor, Point},
     tesseract::{img_to_string_using_tesseract, tess_analyze},
     text::simple_account_holder::find_simple_account_holder,
 };
@@ -103,10 +103,30 @@ pub fn zoom_and_extract(
         provenance.angle_deg = Some(angle.to_degrees());
     }
 
+    // Après rotation, l'ancre était redétectée par une seconde analyse hocr de la page
+    // entière — quatre à cinq secondes pour une position qui se calcule : la rotation
+    // d'un rectangle est de la géométrie. La seconde analyse ne reste que lorsqu'il n'y
+    // avait pas d'ancre avant rotation, auquel cas elle cherche et ne redécouvre pas.
     let (img, maybe_anchor) = maybe_angle
         .map(|angle| {
             let rotated_img = rotate(img, angle);
-            let (_, _, new_anchor) = tess_analyze(&rotated_img);
+            let new_anchor = match &maybe_anchor {
+                Some(anchor) => {
+                    let (x, y, w, h) = rotate_rect(
+                        (
+                            anchor.top_left.x,
+                            anchor.top_left.y,
+                            anchor.width,
+                            anchor.height,
+                        ),
+                        img.width(),
+                        img.height(),
+                        angle,
+                    );
+                    Some(Anchor::new(Point::new(x, y), Point::new(x + w, y + h)))
+                }
+                None => tess_analyze(&rotated_img).2,
+            };
             (rotated_img, new_anchor)
         })
         .unwrap_or((img.clone(), maybe_anchor));
