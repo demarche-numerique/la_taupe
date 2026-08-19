@@ -9,7 +9,7 @@ use crate::{
     lines::{extract_anchors, TextLine},
     ppocr::{image_to_string, recognize_anchors},
     provenance::{AnchorSource, Engine, Provenance, TextStats},
-    rib::{extract_fr_bic, extract_iban, Rib},
+    rib::{extract_fr_bic, extract_iban, join_cell_letters, Rib},
     shapes::{Anchor, Point},
     tesseract::{img_to_string_using_tesseract, tess_analyze},
     text::simple_account_holder::find_simple_account_holder,
@@ -69,7 +69,7 @@ pub fn zoom_and_extract(
 
         provenance.engine = Some(Engine::PpOcrPage);
 
-        let bic = extract_fr_bic(&page_text, Some(&iban));
+        let bic = extract_bic(img, &page_text, &text_lines, &iban, name);
         let account_holder =
             zoom_and_extract_account_holder_traced(img, text_lines, name, provenance);
 
@@ -84,9 +84,9 @@ pub fn zoom_and_extract(
         if let Some(iban) = extract_iban_in_image(&iban_image, name) {
             provenance.engine = Some(Engine::PpOcrCrop);
 
+            let bic = extract_bic(img, &page_text, &text_lines, &iban, name);
             let account_holder =
                 zoom_and_extract_account_holder_traced(img, text_lines.clone(), name, provenance);
-            let bic = extract_fr_bic(&page_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -97,9 +97,9 @@ pub fn zoom_and_extract(
         if let Some(iban) = extract_iban_in_image(&iban_image, name) {
             provenance.engine = Some(Engine::PpOcrNarrowCrop);
 
+            let bic = extract_bic(img, &page_text, &text_lines, &iban, name);
             let account_holder =
                 zoom_and_extract_account_holder_traced(img, text_lines, name, provenance);
-            let bic = extract_fr_bic(&page_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -157,9 +157,9 @@ pub fn zoom_and_extract(
             provenance.engine = Some(Engine::TessCrop);
 
             let (page_text, text_lines, _) = recognize_anchors(&img, &iban_regex, None);
+            let bic = extract_bic(&img, &page_text, &text_lines, &iban, name);
             let account_holder =
                 zoom_and_extract_account_holder_traced(&img, text_lines, name, provenance);
-            let bic = extract_fr_bic(&page_text, Some(&iban));
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -183,6 +183,106 @@ fn find_civilite(s: &str) -> Option<usize> {
         .find(s)
         .or_else(|| prenom_nom_ou.find(s))
         .map(|m| m.start())
+}
+
+/// Lit le BIC : par motif dans le texte de la page, d'abord tel quel, puis les
+/// cellules recollées ; enfin, faute de candidat, en recadrant autour du libellé.
+///
+/// Le BIC n'avait qu'une regex sur la première lecture. Or sur les documents réels il
+/// est souvent imprimé dans un tableau à une lettre par cellule : l'OCR rend les
+/// cellules comme des mots courts — « Ps sƫ FRP P NƫE » — et la regex ne voit jamais
+/// la suite entière. La lecture pleine page est pourtant la bonne : recadrer la zone
+/// fait perdre le contexte et les moteurs n'y voient que des traits. Il suffit de
+/// recoller les cellules avant d'appliquer le motif.
+fn extract_bic(
+    img: &DynamicImage,
+    page_text: &str,
+    text_lines: &[TextLine],
+    iban: &str,
+    name: &str,
+) -> Option<String> {
+    if let Some(bic) = extract_fr_bic(page_text, Some(iban)) {
+        return Some(bic);
+    }
+
+    if let Some(bic) = extract_fr_bic(&join_cell_letters(page_text), Some(iban)) {
+        trace!("BIC par recollement des cellules");
+        return Some(bic);
+    }
+
+    // Sur d'autres documents, l'OCR rend chaque cellule comme une ligne à part entière,
+    // côte à côte à la même hauteur : ligne par ligne, rien à recoller. On les réunit
+    // par la géométrie — même bande verticale, ordre horizontal — avant le motif.
+    let rows = join_cell_lines(text_lines);
+    if let Some(bic) = extract_fr_bic(&rows, Some(iban)) {
+        trace!("BIC par recollement géométrique des cellules");
+        return Some(bic);
+    }
+
+    let bic_word = Regex::new(r"(?i)^bic\b").unwrap();
+    let anchors = extract_anchors(text_lines.to_vec(), &bic_word, None);
+
+    for (index, anchor) in anchors.iter().enumerate().take(2) {
+        let cropped = crop(img, anchor.bic_mask(), name, &format!("{}_bic_mask", index));
+        let text = join_cell_letters(&image_to_string(cropped));
+        if let Some(bic) = extract_fr_bic(&text, Some(iban)) {
+            trace!("BIC par recadrage sur le libellé");
+            return Some(bic);
+        }
+    }
+
+    None
+}
+
+/// Réunit en lignes les fragments reconnus séparément mais alignés à la même hauteur —
+/// typiquement les cellules d'un tableau, une lettre chacune, que le détecteur rend
+/// comme autant de lignes. Rend un texte où chaque bande verticale est une ligne, les
+/// fragments joints sans espace quand ils sont courts et contigus, par un espace sinon.
+fn join_cell_lines(text_lines: &[TextLine]) -> String {
+    let mut items: Vec<(i32, i32, i32, String)> = text_lines
+        .iter()
+        .map(|l| {
+            let r = l.bounding_rect();
+            (r.top(), r.left(), r.height().max(1), l.to_string())
+        })
+        .collect();
+    items.sort_by_key(|(top, left, _, _)| (*top, *left));
+
+    let mut rows: Vec<Vec<(i32, i32, String)>> = Vec::new();
+    let mut row_top: i32 = i32::MIN;
+    let mut row_h: i32 = 1;
+    for (top, left, h, text) in items {
+        let same_band = (top - row_top).abs() < row_h.max(h) / 2;
+        if same_band {
+            rows.last_mut().unwrap().push((left, h, text));
+        } else {
+            rows.push(vec![(left, h, text)]);
+            row_top = top;
+            row_h = h;
+        }
+    }
+
+    rows.into_iter()
+        .map(|mut row| {
+            row.sort_by_key(|(left, _, _)| *left);
+            let mut out = String::new();
+            let mut prev_end: Option<i32> = None;
+            for (left, h, text) in row {
+                let short = text.chars().count() <= 3;
+                // contigu : l'écart est inférieur à une hauteur de ligne
+                let contiguous = prev_end.is_some_and(|e| left - e < h);
+                let glue = short && contiguous;
+                if !out.is_empty() && !glue {
+                    out.push(' ');
+                }
+                out.push_str(&text);
+                // largeur approchée : une hauteur par caractère
+                prev_end = Some(left + text.chars().count() as i32 * h);
+            }
+            out
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
 }
 
 /// Texte des lignes déjà reconnues dont la boîte tombe dans le masque, dans l'ordre
