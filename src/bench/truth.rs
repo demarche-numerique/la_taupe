@@ -32,7 +32,11 @@ pub enum HolderMismatch {
     Truncated,
     /// Plus de lignes que prévu : bloc débordant sur autre chose.
     Overflowing,
-    /// Même nombre de lignes, première ligne (le nom) juste, le reste différent.
+    /// Même nombre de lignes, nom juste, la ligne de ville (code postal) différente.
+    CityLine,
+    /// Même nombre de lignes, nom juste, une ligne de voie différente, ville juste.
+    StreetLine,
+    /// Même nombre de lignes, nom juste, plusieurs lignes d'adresse différentes.
     AddressOnly,
     /// Même nombre de lignes, première ligne différente d'un ou deux caractères.
     NameNearMiss,
@@ -45,6 +49,8 @@ impl HolderMismatch {
         match self {
             HolderMismatch::Truncated => "tronqué",
             HolderMismatch::Overflowing => "débordant",
+            HolderMismatch::CityLine => "ville",
+            HolderMismatch::StreetLine => "voie",
             HolderMismatch::AddressOnly => "adresse",
             HolderMismatch::NameNearMiss => "nom ±1",
             HolderMismatch::NameWrong => "nom faux",
@@ -95,7 +101,19 @@ pub fn classify_holder_mismatch(expected: &str, found: &str) -> HolderMismatch {
     };
 
     if e0 == f0 {
-        return HolderMismatch::AddressOnly;
+        // quelles lignes d'adresse diffèrent ? la ligne de ville porte un code postal
+        let differing: Vec<usize> = (1..expected.len())
+            .filter(|&i| expected[i] != found[i])
+            .collect();
+        let has_cp = |s: &str| {
+            s.split_whitespace()
+                .any(|w| w.len() == 5 && w.chars().all(|c| c.is_ascii_digit()))
+        };
+        return match differing.as_slice() {
+            [i] if has_cp(&expected[*i]) => HolderMismatch::CityLine,
+            [_] => HolderMismatch::StreetLine,
+            _ => HolderMismatch::AddressOnly,
+        };
     }
 
     if edit_distance(e0, f0) <= 2 {
@@ -385,6 +403,20 @@ mod tests {
             classify_holder_mismatch(
                 expected,
                 "M MATISSE HENRI\n51 RUE BERNARD R0Y\n44100 NANTES"
+            ),
+            HolderMismatch::StreetLine
+        );
+        assert_eq!(
+            classify_holder_mismatch(
+                expected,
+                "M MATISSE HENRI\n51 RUE BERNARD ROY\n44100 NANTE5"
+            ),
+            HolderMismatch::CityLine
+        );
+        assert_eq!(
+            classify_holder_mismatch(
+                expected,
+                "M MATISSE HENRI\n51 RUE BERNARD R0Y\n44100 NANTE5"
             ),
             HolderMismatch::AddressOnly
         );
