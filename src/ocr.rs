@@ -54,9 +54,17 @@ pub fn zoom_and_extract(
     let (page_text, text_lines, maybe_anchors) = recognize_anchors(img, &iban_regex, None);
     let maybe_anchor = maybe_anchors.first();
 
-    // empreinte de forme du texte de la première passe : des comptes, jamais le texte
-    if provenance.page_text_stats.is_none() {
-        provenance.page_text_stats = Some(TextStats::of(&page_text));
+    // Empreinte de forme du texte de la page : des comptes, jamais le texte. On garde la
+    // lecture la plus fournie — la seconde passe, sur image nettoyée, peut lire ce que
+    // la première n'a pas vu, et le drapeau « illisible » ne doit porter que sur ce que
+    // le prétraitement n'a pas su rattraper.
+    let stats = TextStats::of(&page_text);
+    let richer = provenance
+        .page_text_stats
+        .as_ref()
+        .is_none_or(|prev| stats.alphas + stats.digits > prev.alphas + prev.digits);
+    if richer {
+        provenance.page_text_stats = Some(stats);
     }
 
     if let Some(anchor) = maybe_anchor {
