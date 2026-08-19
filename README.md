@@ -31,8 +31,8 @@ server met quarante secondes la page en CPU.
 
 **tesseract** (`tesseract-ocr-fra`, dépendance système) sert de second avis sur les
 recadrages que le moteur principal ne lit pas. Il est irremplaçable : mesuré sans lui,
-l'IBAN des photos perd trois documents sur trente-deux, et un second modèle PP-OCR à sa
-place n'en récupère qu'un — deux tailles d'un même modèle partagent leurs erreurs, la
+l'IBAN des photos perd neuf points, et un second modèle PP-OCR à sa
+place n'en récupère que trois — deux tailles d'un même modèle partagent leurs erreurs, la
 redondance qui paie vient d'un moteur d'une autre famille.
 
 Rust 1.95 minimum (`rust-toolchain.toml`), exigé par `oar-ocr`.
@@ -101,3 +101,58 @@ intégralement et que le rapport ne laisse rien fuiter. La mesure complète, OCR
 demande tesseract et les modèles PP-OCR :
 
     cargo test --release --features bench --test bench_synth -- --ignored --nocapture
+
+## Pistes mesurées et écartées
+
+Chaque entrée a été implémentée, mesurée sur les deux corpus réels (des photos d'un
+côté, des PDF et images de l'autre), puis retirée. Le code reste sur les branches `bench_rib` et `oar_ocr` pour
+qui veut rejouer. Sauf mention contraire, « neutre » signifie : aucun verdict ne
+change, à la marge de bruit près — une dizaine de points, c'est ce que deux
+toolchains font bouger sur le même code.
+
+**Redressement des documents pivotés d'un quart de tour.** Deux détecteurs — une
+vignette reconnue dans les quatre sens, puis le classifieur natif de PP-OCR.
+Spectaculaires en synthétique (documents pivotés 60 → 100 %), neutres à négatifs en
+réel : les documents pivotés sont déjà lus sans eux, et faire basculer un document de
+la branche tesseract vers ocrs accélère l'IBAN au prix du BIC et du titulaire. Le cas
+où le gain apparaît — un scan propre pivoté d'un quart de tour exact — n'existe dans
+aucun des deux corpus.
+
+**Projection du texte OCR en grille, pour appliquer le chemin texte aux images.** La
+projection est fidèle, mais `text::patch::complete` coupe un bloc au premier
+double-espace, convention `pdftotext` que l'OCR ne tient pas : le titulaire des
+photos tombe de 62 à 9 %. La suite, pour qui reprend : ne produire un double-espace
+qu'à un écart mesuré en largeurs de caractère.
+
+**Lire le titulaire dans les lignes de la page au lieu de recadrer.** −58 % d'appels
+OCR, mais titulaire des photos 62 → 41 % : le recadrage est un vrai zoom, la
+reconnaissance rapprochée lit les petits caractères que la passe pleine page rate.
+
+**Réglages tesseract sur les recadrages d'IBAN** (`--psm 7`, sans dictionnaires) et
+**alphabet restreint pour ocrs** : `psm 7` perd six points d'IBAN (un recadrage fait
+cinq hauteurs de ligne et en contient parfois plusieurs), le reste est neutre.
+
+**Mise à jour de rten 0.22 → 0.25** : +6 % de latence à appels constants, et exigerait
+Rust 1.94. Sans objet depuis PP-OCR.
+
+**Un second modèle PP-OCR en repli de tesseract** (v6 small) : récupère un des trois
+IBAN que tesseract récupère, et le titulaire tombe de 62 à 47 %. Deux tailles d'un
+même modèle partagent leurs erreurs.
+
+**Classification d'orientation native de PP-OCR** : qualité identique, +26 % de
+latence.
+
+**PP-OCR v5 server** : 42 secondes la page en CPU.
+
+## Ce qu'il faut savoir pour mesurer
+
+- **Un travail à la fois** (`--jobs 1`). À quatre, ONNX Runtime et rten se disputent
+  les cœurs et chaque appel coûte deux à trois fois plus : la mesure ne reflète pas
+  la prod, qui traite une requête à la fois.
+- **La marge de bruit est d'une dizaine de points par corpus.** Le même code compilé
+  par deux toolchains lit un recadrage à un ou deux caractères près, assez pour
+  faire basculer un mod-97. En deçà, un écart entre deux mesures ne dit rien.
+- **Le corpus synthétique est calibré sur l'IBAN et le titulaire, et désormais sur le
+  BIC.** Il a longtemps été faux sur le BIC à cause d'ocrs, pas du générateur. Il
+  reste plus propre que le réel : un quart des photos réelles reconnues n'a aucun
+  vocabulaire de RIB lisible, contre aucune en synthétique.
