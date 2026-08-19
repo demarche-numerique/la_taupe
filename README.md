@@ -152,6 +152,14 @@ latence.
 
 **PP-OCR v5 server** : 42 secondes la page en CPU.
 
+**Ancrer le titulaire sur la civilité** (« M », « MME », « Monsieur »… en tête de
+ligne), quand ni code postal ni libellé « titulaire » ne le localisent. Le repère est
+juste : sur les trois photos réelles sans titulaire, il trouve le bloc à chaque fois.
+Mais aucun des trois n'est exact — un nom à un ou deux caractères près, une adresse
+fausse sous un nom juste, un bloc incomplet — et le taux de titulaires justes ne bouge
+pas. Retiré, par choix : **ne rien rendre plutôt qu'un bloc douteux**, comme pour le
+BIC. À reprendre si un référentiel (communes, voies) permet de valider le bloc trouvé.
+
 ## Ce qu'il faut savoir pour mesurer
 
 - **Un travail à la fois** (`--jobs 1`). À quatre, les appels ONNX Runtime se disputent
