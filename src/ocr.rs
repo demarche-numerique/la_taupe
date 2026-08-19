@@ -164,7 +164,7 @@ fn zoom_and_extract_account_holder(
     let code_postal_word_regex = Regex::new(r"^\d{5}").unwrap();
 
     let postal_anchors = extract_anchors(
-        text_lines,
+        text_lines.clone(),
         &code_postal_word_regex,
         Some(&code_postal_line_regex),
     );
@@ -211,9 +211,10 @@ fn zoom_and_extract_account_holder(
         return account_holder;
     }
 
+    // Le mot « titulaire » se cherche dans les lignes déjà reconnues : relancer la
+    // reconnaissance de la page entière pour l'y trouver coûtait un appel complet.
     let account_holder_word_regex = Regex::new(r"(?i)titulaire").unwrap();
-    let (_, _text_lines, account_holder_anchors) =
-        ocrs_anchors(img, &account_holder_word_regex, None);
+    let account_holder_anchors = extract_anchors(text_lines, &account_holder_word_regex, None);
 
     account_holder_anchors
         .iter()
