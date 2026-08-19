@@ -176,6 +176,15 @@ fausse sous un nom juste, un bloc incomplet — et le taux de titulaires justes 
 pas. Retiré, par choix : **ne rien rendre plutôt qu'un bloc douteux**, comme pour le
 BIC. À reprendre si un référentiel (communes, voies) permet de valider le bloc trouvé.
 
+**Localiser le bloc titulaire par NER zéro-shot** (GLiNER, `gliner_multi_pii-v1`,
+289 M paramètres, via gline-rs). Le modèle voit la ligne du nom sur 72 à 85 % des
+documents, mais ne sait pas borner le bloc dans le texte linéarisé : sur le bloc
+complet il fait moitié moins bien que la cascade, sur chaque corpus. En repli quand la
+cascade ne rend rien, il rendrait plus de blocs faux que de justes. S'y ajoutent
+1,1 Go de modèle (l'export int8 de 332 Mo ne rend aucune entité), 0,4 à 0,9 s par
+document, et un conflit de version ONNX Runtime avec oar-ocr. L'évaluation complète
+est rejouable dans `gitignored/gliner_eval/`.
+
 ## Ce qu'il faut savoir pour mesurer
 
 - **Un travail à la fois** (`--jobs 1`). À quatre, les appels ONNX Runtime se disputent
