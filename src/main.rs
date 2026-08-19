@@ -38,7 +38,7 @@ fn main() {
 
         let paths: Vec<&Path> = args[1..].iter().map(Path::new).collect();
         paths.iter().for_each(|path| {
-            let result = Analysis::try_from((*path, Some(Hint::Type(Type::Rib))));
+            let result = Analysis::try_from((*path, Some(Hint::Type(Type::Twoddoc))));
             match result {
                 Ok(analysis_result) => {
                     let json = json!({
