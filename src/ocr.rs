@@ -180,6 +180,29 @@ fn match_civilite(s: &str) -> bool {
     find_civilite(s).is_some()
 }
 
+/// Position du début du bloc titulaire quand un libellé le désigne : ce qui suit le
+/// libellé sur sa ligne (« Titulaire : M … »), sinon la ligne suivante (« Nom et
+/// adresse du bénéficiaire » en ligne à part).
+fn after_holder_label(s: &str) -> Option<usize> {
+    let label = Regex::new(
+        r"(?i)(nom et adresse du )?(titulaire|intitul[ée]|account owner|b[ée]n[ée]ficiaire)s?( du compte| de compte| du client)?\s*(n[°o]\s*)?[:.\-]*",
+    )
+    .unwrap();
+    let m = label.find(s)?;
+
+    let line_end = s[m.end()..]
+        .find('\n')
+        .map(|i| m.end() + i)
+        .unwrap_or(s.len());
+
+    let rest = s[m.end()..line_end].trim();
+    if rest.is_empty() {
+        (line_end < s.len()).then_some(line_end + 1)
+    } else {
+        Some(line_end - (s[m.end()..line_end].trim_start().len()))
+    }
+}
+
 fn find_civilite(s: &str) -> Option<usize> {
     let civilite =
         Regex::new(r"(?i)(^|\s)(m|monsieur|mr|mademoiselle|ml|mle|mlle|melle|madame|mme)\.?\s")
@@ -361,7 +384,10 @@ fn zoom_and_extract_account_holder_traced(
     // tenté faute de civilité, décale la fenêtre vers la gauche jusqu'à happer le nom du
     // titulaire voisin, qui se retrouve collé à l'adresse de l'agence.
     let domiciliation = Regex::new(r"(?i)(domiciliation|agence|cadre r[ée]serv[ée])").unwrap();
-    let holder_label = Regex::new(r"(?i)(titulaire|intitul[ée]|account owner)").unwrap();
+    // « bénéficiaire » : certains RIB étiquettent le bloc « Nom et adresse du
+    // bénéficiaire » — même rôle que « titulaire », mesuré sur les corpus réels
+    let holder_label =
+        Regex::new(r"(?i)(titulaire|intitul[ée]|account owner|b[ée]n[ée]ficiaire)").unwrap();
 
     // Le recadrage est un vrai zoom : sur les photos, la reconnaissance rapprochée lit
     // les petits caractères que la passe pleine page rate. Lire le bloc dans les lignes
@@ -447,6 +473,8 @@ fn zoom_and_extract_account_holder_traced(
 
     // Le mot « titulaire » se cherche dans les lignes déjà reconnues : relancer la
     // reconnaissance de la page entière pour l'y trouver coûtait un appel complet.
+    // « bénéficiaire » n'entre pas dans ce repli : mesuré, le masque à compte de lignes
+    // fixe rend des blocs tronqués sur ces mises en page — pire que rien
     let account_holder_word_regex = Regex::new(r"(?i)titulaire").unwrap();
     let account_holder_anchors = extract_anchors(text_lines, &account_holder_word_regex, None);
 
@@ -466,22 +494,44 @@ fn zoom_and_extract_account_holder_traced(
         .find_map(|text| find_simple_account_holder(&text, 1))
 }
 
-/// Restreint un bloc reconnu au titulaire : on écarte ce qui précède la civilité, et ce
-/// qui suit le code postal.
+/// Restreint un bloc reconnu au titulaire : on écarte ce qui précède la civilité — ou le
+/// libellé (« titulaire », « bénéficiaire »…) quand la civilité manque —, et ce qui suit
+/// le code postal.
+///
+/// Le libellé fait ancre à part entière : un bloc « Nom et adresse du bénéficiaire »
+/// n'a souvent pas de civilité, et l'exiger perdait le titulaire alors que le document
+/// le désigne explicitement. Ce qui suit le libellé — sur sa ligne, sinon les lignes
+/// d'en dessous — est le bloc.
 ///
 /// Le code postal peut manquer alors qu'une civilité est présente — le recadrage aligné à
 /// droite décale la fenêtre et peut le laisser hors champ, et l'OCR ne le restitue pas
 /// toujours sous une forme reconnaissable. Dans ce cas on conserve le bloc, borné par la
 /// hauteur du recadrage, plutôt que d'abandonner.
 fn trim_holder(text: &str, postal_code: &Regex) -> Option<String> {
-    let start = find_civilite(text)?;
+    // Une civilité avant le libellé est un faux positif — un « M » isolé dans le texte
+    // de banque au-dessus suffit — et ferait déborder le bloc vers le haut : le libellé
+    // prime alors. Après le libellé, la civilité est dans le bloc : elle reste l'ancre,
+    // au plus près du nom.
+    let start = match (find_civilite(text), after_holder_label(text)) {
+        (Some(civility), Some(label)) => Some(civility.max(label)),
+        (civility, label) => civility.or(label),
+    }?;
     let text = text[start..].trim();
 
+    if text.is_empty() {
+        return None;
+    }
+
     let lines: Vec<&str> = text.lines().collect();
-    let end = lines
-        .iter()
-        .position(|line| postal_code.is_match(line))
-        .map_or(lines.len(), |index| index + 1);
+    let postal = lines.iter().position(|line| postal_code.is_match(line));
+    let end = postal.map_or(lines.len(), |index| index + 1);
+
+    // Ancré sur le seul libellé — sans civilité pour confirmer que c'est bien un nom —
+    // un bloc qui ne va pas jusqu'à son code postal est douteux : probablement coupé,
+    // ou pas un titulaire. Ne rien rendre plutôt qu'un bloc douteux.
+    if !match_civilite(text) && postal.is_none() {
+        return None;
+    }
 
     Some(lines[..end].join("\n"))
 }
@@ -569,9 +619,39 @@ mod tests {
     }
 
     #[test]
-    fn a_block_without_civility_is_discarded() {
+    fn a_block_without_civility_nor_label_is_discarded() {
         assert_eq!(
             trim_holder("51 RUE BERNARD ROY\n44100 NANTES", &postal_code()),
+            None
+        );
+    }
+
+    /// Un libellé fait ancre même sans civilité : « Nom et adresse du bénéficiaire »
+    /// désigne le bloc, l'exiger perdait des titulaires explicitement étiquetés.
+    #[test]
+    fn a_labelled_block_without_civility_is_kept() {
+        let text = "Nom et adresse du bénéficiaire\nMATISSE HENRI\n51 RUE BERNARD ROY\n44100 NANTES\nDomiciliation";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("MATISSE HENRI\n51 RUE BERNARD ROY\n44100 NANTES")
+        );
+
+        // libellé et titulaire sur la même ligne
+        assert_eq!(
+            trim_holder("Titulaire : MATISSE HENRI\n44100 NANTES", &postal_code()).as_deref(),
+            Some("MATISSE HENRI\n44100 NANTES")
+        );
+
+        // un libellé qui ne désigne rien ne rend rien
+        assert_eq!(trim_holder("Titulaire du compte", &postal_code()), None);
+
+        // sans civilité ni code postal pour le fermer, le bloc est douteux :
+        // probablement coupé, ou pas un titulaire — ne rien rendre
+        assert_eq!(
+            trim_holder(
+                "Nom et adresse du bénéficiaire\nMATISSE HENRI",
+                &postal_code()
+            ),
             None
         );
     }
