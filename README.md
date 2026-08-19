@@ -133,7 +133,15 @@ reconnaissance rapprochée lit les petits caractères que la passe pleine page r
 cinq hauteurs de ligne et en contient parfois plusieurs), le reste est neutre.
 
 **Mise à jour de rten 0.22 → 0.25** : +6 % de latence à appels constants, et exigerait
-Rust 1.94. Sans objet depuis PP-OCR.
+Rust 1.94. Sans objet depuis le retrait d'ocrs.
+
+**Garder ocrs en second moteur sélectionnable.** Mesuré une dernière fois avant retrait :
+en agrégat il perd sur tous les champs des deux corpus — IBAN, BIC et titulaire, avec
+une latence 3,4 fois plus longue — et la garde « illisible » élimine un document sur
+dix, qu'il lit pourtant. Il ne gagnait plus que quelques titulaires isolés — cinq
+points en tout — pas de quoi payer 12 Mo de modèles morts dans le binaire et une
+seconde pile de reconnaissance.
+Retiré ; ses types d'échange (`TextLine`, mots positionnés) survivent dans `src/lines.rs`.
 
 **Un second modèle PP-OCR en repli de tesseract** (v6 small) : récupère un des trois
 IBAN que tesseract récupère, et le titulaire tombe de 62 à 47 %. Deux tailles d'un
@@ -146,7 +154,7 @@ latence.
 
 ## Ce qu'il faut savoir pour mesurer
 
-- **Un travail à la fois** (`--jobs 1`). À quatre, ONNX Runtime et rten se disputent
+- **Un travail à la fois** (`--jobs 1`). À quatre, les appels ONNX Runtime se disputent
   les cœurs et chaque appel coûte deux à trois fois plus : la mesure ne reflète pas
   la prod, qui traite une requête à la fois.
 - **La marge de bruit est d'une dizaine de points par corpus.** Le même code compilé
