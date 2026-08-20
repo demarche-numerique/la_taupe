@@ -17,9 +17,10 @@ fn main() {
         println!("La taupe: a tool to analyze files");
         println!("--version to print the version");
         println!("--trusted-repositories-urls to print the trusted repository urls");
-        println!("la_taupe file_path to analyze a file as a 2D-Doc");
-        println!("la_taupe --rib [--jobs N] path... to analyze files or directories as RIBs,");
-        println!("        one JSON line per file, with the analysis duration");
+        println!("la_taupe [--type rib|2ddoc] [--jobs N] path... to analyze files or");
+        println!("        directories, one JSON line per file, with the analysis duration.");
+        println!("        --type restricts the analysis, like the hint of the http api;");
+        println!("        without it both analyses run.");
         println!("la_taupe to start the server");
         std::process::exit(0);
     }
@@ -37,77 +38,59 @@ fn main() {
         std::process::exit(0);
     }
 
-    if args.contains(&String::from("--rib")) {
-        env_logger::init();
-        analyze_ribs(&args);
-        return;
-    }
-
     if args.len() == 1 {
         let _ = server::main();
     } else {
         env_logger::init();
-
-        let paths: Vec<&Path> = args[1..].iter().map(Path::new).collect();
-        paths.iter().for_each(|path| {
-            let result = Analysis::try_from((*path, Some(Hint::Type(Type::Twoddoc))));
-            match result {
-                Ok(analysis_result) => {
-                    let json = json!({
-                        "file_path": path.to_str().unwrap(),
-                        "analysis": analysis_result
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
-                }
-                Err(msg) => {
-                    let json = json!({
-                        "file_path": path.to_str().unwrap(),
-                        "error": msg
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
-                }
-            }
-        });
+        analyze_batch(&args);
     }
 }
 
-/// Batch RIB analysis: expands directories, analyzes `--jobs` files concurrently and
+/// Batch analysis: expands directories, analyzes `--jobs` files concurrently and
 /// prints one compact JSON line per file, so a driving script can stream the results.
-fn analyze_ribs(args: &[String]) {
-    let jobs = args
-        .iter()
-        .position(|arg| arg == "--jobs")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1);
-
+/// `--type` mirrors the hint of the http api; without it both analyses run.
+fn analyze_batch(args: &[String]) {
+    let mut hint: Option<Hint> = None;
+    let mut jobs = 1;
     let mut files: Vec<PathBuf> = Vec::new();
-    let mut jobs_value = false;
-    for arg in &args[1..] {
-        if jobs_value {
-            jobs_value = false;
-            continue;
-        }
-        if arg == "--jobs" {
-            jobs_value = true;
-            continue;
-        }
-        if arg.starts_with("--") {
-            continue;
-        }
 
-        match expand(Path::new(arg)) {
-            Ok(mut paths) => files.append(&mut paths),
-            Err(msg) => {
-                eprintln!("{}", msg);
+    let mut iter = args[1..].iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--type" => match iter.next().map(String::as_str) {
+                Some("rib") => hint = Some(Hint::Type(Type::Rib)),
+                Some("2ddoc") => hint = Some(Hint::Type(Type::Twoddoc)),
+                other => {
+                    eprintln!(
+                        "--type expects rib or 2ddoc, got {}",
+                        other.unwrap_or("nothing")
+                    );
+                    std::process::exit(1);
+                }
+            },
+            "--jobs" => match iter.next().and_then(|value| value.parse::<usize>().ok()) {
+                Some(value) => jobs = value.max(1),
+                None => {
+                    eprintln!("--jobs expects a number");
+                    std::process::exit(1);
+                }
+            },
+            flag if flag.starts_with("--") => {
+                eprintln!("unknown flag {}", flag);
                 std::process::exit(1);
             }
+            path => match expand(Path::new(path)) {
+                Ok(mut paths) => files.append(&mut paths),
+                Err(msg) => {
+                    eprintln!("{}", msg);
+                    std::process::exit(1);
+                }
+            },
         }
     }
 
     if files.is_empty() {
-        eprintln!("--rib expects at least one file or directory");
+        eprintln!("expected at least one file or directory");
         std::process::exit(1);
     }
 
@@ -120,7 +103,7 @@ fn analyze_ribs(args: &[String]) {
             scope.spawn(move || {
                 files.iter().skip(job).step_by(jobs).for_each(|path| {
                     // println! locks stdout for the whole line: no interleaving
-                    println!("{}", analyze_one_rib(path));
+                    println!("{}", analyze_one(path, hint));
                 });
             });
         }
@@ -156,12 +139,12 @@ fn expand(path: &Path) -> Result<Vec<PathBuf>, String> {
 
 /// One stubborn file must not sink a whole directory run: panics are caught and
 /// reported as an error line, like any other failure.
-fn analyze_one_rib(path: &Path) -> String {
+fn analyze_one(path: &Path, hint: Option<Hint>) -> String {
     let file_path = path.display().to_string();
 
     let started = Instant::now();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        Analysis::try_from((path, Some(Hint::Type(Type::Rib))))
+        Analysis::try_from((path, hint))
     }));
     let duration_ms = started.elapsed().as_millis() as u64;
 
