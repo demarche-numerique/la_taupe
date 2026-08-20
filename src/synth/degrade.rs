@@ -8,7 +8,7 @@ use std::io::{Cursor, Write};
 use std::process::{Command, Stdio};
 
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageBuffer, Luma, Rgb};
-use imageproc::geometric_transformations::{warp_into, Interpolation, Projection};
+use imageproc::geometric_transformations::{warp_into, Border, Interpolation, Projection};
 
 use crate::image_utils::rotate;
 
@@ -195,9 +195,9 @@ fn apply_perspective(img: &DynamicImage, strength: f32, rng: &mut Rng) -> Dynami
     let mut out = ImageBuffer::from_pixel(image.width(), image.height(), Rgb([255, 255, 255]));
     warp_into(
         &image,
-        &projection,
+        projection,
         Interpolation::Bicubic,
-        Rgb([255, 255, 255]),
+        Border::Constant(Rgb([255, 255, 255])),
         &mut out,
     );
 

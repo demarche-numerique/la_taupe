@@ -2,7 +2,7 @@
 name = "la_taupe"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.95.0"
+rust-version = "1.97.1"
 license-file = "LICENSE.txt"
 description = "La Taupe is a tool to extract administrative data from documents."
 authors = ["See git log"]
@@ -26,7 +26,9 @@ tempfile = "*"
 log = "*"
 linfa = "*"
 linfa-clustering = "*"
-ndarray = "*"
+# pinned to the ndarray major linfa builds against: a wildcard resolves to a newer
+# major and the two ndarrays cannot exchange types
+ndarray = "0.16"
 env_logger = "*"
 regex = "*"
 scraper = "*"

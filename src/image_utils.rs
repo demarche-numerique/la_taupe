@@ -3,7 +3,7 @@ use std::env::{current_dir, var};
 use image::{imageops::fast_blur, DynamicImage, GrayImage, ImageBuffer, Luma, Rgb};
 use imageproc::{
     edges::canny,
-    geometric_transformations::{warp_into, Interpolation, Projection},
+    geometric_transformations::{warp_into, Border, Interpolation, Projection},
     hough::{detect_lines, draw_polar_lines, LineDetectionOptions, PolarLine},
     map::map_pixels,
     morphology::{grayscale_dilate, Mask},
@@ -208,9 +208,9 @@ pub fn rotate(image: &DynamicImage, theta: f32) -> DynamicImage {
 
     warp_into(
         &image,
-        &projection,
+        projection,
         Interpolation::Bicubic,
-        WHITE,
+        Border::Constant(WHITE),
         &mut new_image,
     );
 
@@ -269,7 +269,7 @@ pub fn resize(img: &DynamicImage, initial_height: u32, target_height: u32) -> Dy
 }
 
 fn draw_lines(edges: &DynamicImage, lines: &[PolarLine], name: &str) {
-    let color_edges = map_pixels(edges, |_x, _y, p| if p[0] > 0 { WHITE } else { BLACK });
+    let color_edges = map_pixels(&edges.to_luma8(), |p| if p[0] > 0 { WHITE } else { BLACK });
     let lines_image = draw_polar_lines(&color_edges, lines, GREEN);
     save_image_in_debug(&lines_image.into(), name, "lines");
 }
