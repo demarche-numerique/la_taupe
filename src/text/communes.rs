@@ -12,9 +12,11 @@
 //! colonnes code postal et libellé d'acheminement sont conservées — la forme postale en
 //! capitales sans accent, celle qu'un RIB imprime. Regénérer :
 //!
-//!     curl -fsSL https://data.laposte.fr/data-fair/api/v1/datasets/laposte-hexasmal/raw \
-//!       | iconv -f LATIN1 -t UTF-8 | awk -F';' 'NR>1 {print $3";"$4}' | sort -u \
-//!       > src/code_postal_commune.csv
+//! ```text
+//! curl -fsSL https://data.laposte.fr/data-fair/api/v1/datasets/laposte-hexasmal/raw \
+//!   | iconv -f LATIN1 -t UTF-8 | awk -F';' 'NR>1 {print $3";"$4}' | sort -u \
+//!   > src/code_postal_commune.csv
+//! ```
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
