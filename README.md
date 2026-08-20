@@ -187,6 +187,13 @@ est rejouable dans `gitignored/gliner_eval/`. Contre-essai avec un NER français
 supervisé (`camembert-ner`, 110 M paramètres) : pire sur tout sauf la latence — la
 prose de Wikipédia ne prépare pas aux blocs en capitales des RIB.
 
+**Couper le bloc titulaire à la ligne de domiciliation** (libellé « domiciliation »,
+ou raison sociale de la banque résolue par le registre — deux mots sur la ligne).
+Mécanisme démontré juste sur la structure du document visé — titulaire d'une ligne,
+bloc d'agence dessous, seul code postal de la page — mais aucun verdict ne bouge sur
+les deux corpus : sur ces photos, l'OCR déforme les marqueurs texte avant que la
+coupe ne puisse les voir. L'échec restant est de lecture, pas de bornage.
+
 ## Ce qu'il faut savoir pour mesurer
 
 - **Un travail à la fois** (`--jobs 1`). À quatre, les appels ONNX Runtime se disputent

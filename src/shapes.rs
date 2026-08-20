@@ -112,7 +112,11 @@ impl Anchor {
             .y
             .saturating_sub((self.height as f32 * 0.5) as u32);
 
-        let wrapping_width = self.width * 10;
+        // 8 largeurs d'ancre et pas 10 : un nom et son adresse tiennent dedans, la
+        // domiciliation ferrée à droite de la page en sort — à 10, ses fragments se
+        // collaient aux lignes du titulaire dans le recadrage ; à 6, deux noms longs
+        // se coupaient
+        let wrapping_width = self.width * 8;
         let wrapping_height = self.height * 4;
 
         (x, y, wrapping_width, wrapping_height)
