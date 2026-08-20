@@ -31,8 +31,8 @@ fn fetch_verifying_key(
     let certificate = certificate(autorite_certification, identifiant_du_certificat);
 
     let key = certificate
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .subject_public_key
         .raw_bytes();
 
