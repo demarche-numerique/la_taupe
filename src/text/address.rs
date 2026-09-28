@@ -38,6 +38,12 @@ pub fn is_english_label(line: &str) -> bool {
         .is_match(line)
 }
 
+fn is_bic(line: &str) -> bool {
+    Regex::new(r"^[A-Z]{4}\s?FR\s?[A-Z0-9]{2}(\s?[A-Z0-9]{3})?$")
+        .unwrap()
+        .is_match(line)
+}
+
 /// Première ligne d'un bloc qui nomme un réseau bancaire : c'est la domiciliation, pas
 /// le titulaire. Deux blocs adressés sans libellé — la banque à gauche, le titulaire à
 /// droite — et c'est le premier trouvé qui l'emportait. La liste s'en tient aux noms de
@@ -93,6 +99,9 @@ impl Addr {
             .filter(|line| !header.is_match(line))
             .filter(|line| !is_english_label(line))
             .map(|line| line.trim().to_string())
+            // « BIC : NORDFRPP » au-dessus du bloc : la valeur seule, ou rien une fois
+            // le libellé coupé au deux-points, n'appartient pas au titulaire
+            .filter(|line| !line.is_empty() && !is_bic(line))
             .collect()
     }
 }
@@ -346,6 +355,34 @@ Banque de France
                 "CAISSE DES ECOLES",
                 "1 PLACE DE LA MAIRIE",
                 "44100 NANTES"
+            ]))
+        );
+    }
+
+    /// Agence à gauche, titulaire aligné à droite sous un libellé qui commence plus à
+    /// gauche que son code postal : le libellé désigne quand même le bloc de droite.
+    #[test]
+    fn a_label_offset_above_a_right_aligned_block_types_it() {
+        // colonne de gauche, puis texte de droite aligné sur la colonne 100
+        let row = |left: &str, right: &str| format!("{:<40}{:>60}", left, right);
+        let text = [
+            // le libellé commence avant le bloc et finit avant la colonne du code postal
+            format!("{:<40}{:<60}", "  Agence", "                         Intitulé du compte"),
+            row("DIRECTION DES PEINTRES", "FONDATION CLAUDE MONET"),
+            String::new(),
+            String::new(),
+            row("14 16 RUE DES CAPUCINES", "12 AVENUE DES IRIS"),
+            "CS 90001".to_string(),
+            row("75633 PARIS CEDEX 13", "75017 PARIS"),
+        ]
+        .join("\n");
+
+        assert_eq!(
+            find_account_holder_addr(&text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "FONDATION CLAUDE MONET",
+                "12 AVENUE DES IRIS",
+                "75017 PARIS"
             ]))
         );
     }

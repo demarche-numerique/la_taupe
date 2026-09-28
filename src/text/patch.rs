@@ -23,9 +23,13 @@ impl Patch {
         let (_content, _before, left, right) = complete(text[index], start, end).unwrap();
 
         if up {
+            // bord gauche le plus à gauche atteint par le bloc : un bloc aligné à droite
+            // a des lignes plus longues que celle du code postal
+            let mut block_left = left;
             for i in (index.saturating_sub(6)..=index).rev() {
-                if let Some((content, before, _, _)) = complete(text[i], left, right) {
+                if let Some((content, before, line_left, _)) = complete(text[i], left, right) {
                     let should_stop = stop.is_match(&content) || stop.is_match(&before);
+                    block_left = block_left.min(line_left);
 
                     content_lines.insert(0, content);
                     context_lines.insert(0, before);
@@ -33,6 +37,14 @@ impl Patch {
                     if should_stop {
                         break;
                     }
+                } else if let Some(label) = label_over_block(text[i], stop, block_left, right) {
+                    // Le libellé posé au-dessus d'un bloc aligné à droite commence plus à
+                    // gauche que le code postal et s'arrête avant sa colonne : la ligne
+                    // était ignorée, et le bloc — « Intitulé du compte » pourtant — restait
+                    // sans type, battu par celui de l'agence voisine. Il le désigne et
+                    // le ferme.
+                    context_lines.insert(0, label);
+                    break;
                 }
             }
         } else {
@@ -81,6 +93,15 @@ impl Patch {
             .filter(|line| !line.is_empty())
             .collect()
     }
+}
+
+/// Libellé de `stop` sur la ligne dont l'étendue chevauche les colonnes du bloc.
+fn label_over_block(line: &str, stop: &Regex, left: usize, right: usize) -> Option<String> {
+    stop.find_iter(line).find_map(|m| {
+        let start = line[..m.start()].chars().count();
+        let end = start + m.as_str().chars().count();
+        (end > left && start <= right).then(|| m.as_str().to_string())
+    })
 }
 
 /// Vrai si la ligne n'a que des blancs entre les colonnes `left` et `right` incluses.
