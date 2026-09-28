@@ -213,6 +213,11 @@ recadrage qui part du libellé « Intitulé du compte » coupait les noms longs 
 droite, que le masque aligné à droite lisait entiers : −8 titulaires sur les photos du
 corpus ouvert. Gardé en dernier recours seulement, où il ne fait qu'ajouter.
 
+**Rastériser les PDF image au-delà des 150 dpi de `pdftoppm`.** À 300 dpi, un ou deux
+titulaires de plus sur les scans du corpus ouvert, mais le temps des scans double (max
+9,8 s) ; à 220 dpi, un titulaire perdu sur `ibans_2` et un document à 14,5 s. La
+faiblesse des scans en prod ne tient pas à la résolution de rastérisation.
+
 **Réparer un code postal abîmé par l'OCR** (« 80 O90 AMIENS ») quand la ville lue
 confirme le code réparé dans le référentiel des communes. Neutre sur les photos du
 corpus ouvert : les codes réparables sont dans des blocs qui ont d'autres défauts.
