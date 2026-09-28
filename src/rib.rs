@@ -168,9 +168,12 @@ pub fn replace_char_by_digit_in_2_and_3_position(ibans: Vec<String>) -> Vec<Stri
 }
 
 pub fn extract_iban(text: &str) -> Option<String> {
-    let french_iban_re = Regex::new(r"(?<iban>FR[[[:digit:]]O]{2}([[[:space:]]\|,]*[[:alnum:]]{4}){5})([[[:space:]]|,]*[[:alnum:]][[:digit:]]{2})").unwrap();
+    // Les groupes sont séparés d'espaces, de barres de tableau, de virgules — ou de
+    // tirets, que certaines chaînes éditiques et les documents retapés à la main
+    // emploient : « FR 76 - 1007- 1860-… », « FR 96 – 3000 – 2048 – … ».
+    let french_iban_re = Regex::new(r"(?<iban>FR[[[:digit:]]O]{2}([[[:space:]]\|,\-–—]*[[:alnum:]]{4}){5})([[[:space:]]|,\-–—]*[[:alnum:]][[:digit:]]{2})").unwrap();
 
-    let to_remove = Regex::new(r"[[[:space:]]|,]*").unwrap();
+    let to_remove = Regex::new(r"[[[:space:]]|,\-–—]*").unwrap();
 
     let mut ibans = french_iban_re
         .find_iter(text)
@@ -212,7 +215,7 @@ pub fn extract_iban(text: &str) -> Option<String> {
         return Some(found_ibans[0].to_string());
     }
 
-    let lax_frenc_iban_re = Regex::new(r"(?<iban>FR[[:alnum:]]{2}([[[:space:]]\|]*[[:alnum:]]{4}){5})([[[:space:]]|]*[[:alnum:]][[:digit:]]{2})").unwrap();
+    let lax_frenc_iban_re = Regex::new(r"(?<iban>FR[[:alnum:]]{2}([[[:space:]]\|\-–—]*[[:alnum:]]{4}){5})([[[:space:]]|\-–—]*[[:alnum:]][[:digit:]]{2})").unwrap();
 
     let lax_ibans = lax_frenc_iban_re
         .find_iter(text)
@@ -415,6 +418,21 @@ mod tests {
         ";
 
         assert_eq!(extract_iban(iban_with_faults).unwrap(), iban);
+    }
+
+    /// Des tirets, courts ou longs, entre les groupes : l'IBAN reste reconnu.
+    #[test]
+    fn an_iban_with_dashed_groups_is_found() {
+        let iban = "FR76 3000 1000 6449 1900 9562 088";
+
+        assert_eq!(
+            extract_iban("Code IBAN      FR 76 - 3000- 1000-6449-1900-9562-088").as_deref(),
+            Some(iban)
+        );
+        assert_eq!(
+            extract_iban("FR 76 – 3000 – 1000 – 6449 – 1900 – 9562 – 088").as_deref(),
+            Some(iban)
+        );
     }
 
     #[test]
