@@ -78,8 +78,10 @@ pub fn zoom_and_extract(
         provenance.engine = Some(Engine::PpOcrPage);
 
         let bic = extract_bic(img, &page_text, &text_lines, &iban, name);
+        let (holder_img, holder_lines) = upright(img, &text_lines, &iban, &iban_regex)
+            .unwrap_or_else(|| (img.clone(), text_lines));
         let account_holder =
-            zoom_and_extract_account_holder_traced(img, text_lines, name, provenance);
+            zoom_and_extract_account_holder_traced(&holder_img, holder_lines, name, provenance);
 
         return Some(Rib::from_iban(iban, account_holder, bic));
     };
@@ -174,6 +176,52 @@ pub fn zoom_and_extract(
     }
 
     None
+}
+
+/// Vrai si la page se lit de haut en bas : la plupart de ses lignes un peu longues sont
+/// plus hautes que larges. C'est une photo prise appareil tourné d'un quart de tour.
+fn mostly_vertical(lines: &[TextLine]) -> bool {
+    let long: Vec<&TextLine> = lines
+        .iter()
+        .filter(|l| l.to_string().chars().count() >= 6)
+        .collect();
+    let vertical = long
+        .iter()
+        .filter(|l| {
+            let r = l.bounding_rect();
+            r.height() > r.width()
+        })
+        .count();
+
+    long.len() >= 3 && vertical * 2 > long.len()
+}
+
+/// Redresse d'un quart de tour une page lue de haut en bas, pour le titulaire.
+///
+/// PP-OCR lit l'IBAN d'une photo pivotée, mais ses lignes sont alors des colonnes :
+/// hautes de trois cents pixels, elles font des ancres de code postal démesurées, et
+/// tous les masques du bloc adresse — des multiples de leur hauteur — tombent à côté.
+/// Le titulaire était perdu sur chaque photo prise appareil tourné, un quart des photos
+/// réelles. On relit la page tournée dans un sens, puis dans l'autre, et on garde celui
+/// qui redonne le même IBAN en lignes horizontales. Rien n'est relu pour une page droite.
+fn upright(
+    img: &DynamicImage,
+    text_lines: &[TextLine],
+    iban: &str,
+    iban_regex: &Regex,
+) -> Option<(DynamicImage, Vec<TextLine>)> {
+    if !mostly_vertical(text_lines) {
+        return None;
+    }
+
+    [img.rotate90(), img.rotate270()]
+        .into_iter()
+        .find_map(|rotated| {
+            let (text, lines, _) = recognize_anchors(&rotated, iban_regex, None);
+            let same_iban = extract_iban(&text).as_deref() == Some(iban);
+
+            (same_iban && !mostly_vertical(&lines)).then_some((rotated, lines))
+        })
 }
 
 fn match_civilite(s: &str) -> bool {
@@ -758,6 +806,44 @@ mod tests {
         assert!(match_civilite("HENRI MATISSE OU FRIDA KAHLO"));
         assert!(match_civilite("Madame Kahlo Frida"));
         assert!(!match_civilite("51 RUE BERNARD ROY"));
+    }
+
+    fn line(text: &str, top: i32, left: i32, height: i32, width: i32) -> TextLine {
+        let n = text.chars().count() as i32;
+        TextLine::new(
+            text.chars()
+                .enumerate()
+                .map(|(i, c)| crate::lines::TextChar {
+                    char: c,
+                    rect: crate::lines::Rect::from_tlhw(
+                        top,
+                        left + i as i32 * width / n,
+                        height,
+                        width / n,
+                    ),
+                })
+                .collect(),
+        )
+    }
+
+    /// Une page lue de haut en bas a des lignes plus hautes que larges ; une page droite
+    /// non, même avec quelques mots courts ou une étiquette verticale en marge.
+    #[test]
+    fn a_page_read_top_to_bottom_is_detected() {
+        let vertical = vec![
+            line("FR76 3000 1000 6449", 0, 0, 400, 30),
+            line("M MATISSE HENRI", 0, 40, 300, 30),
+            line("44100 NANTES", 0, 80, 250, 30),
+        ];
+        assert!(mostly_vertical(&vertical));
+
+        let upright = vec![
+            line("FR76 3000 1000 6449", 0, 0, 30, 400),
+            line("M MATISSE HENRI", 40, 0, 30, 300),
+            line("44100 NANTES", 80, 0, 30, 250),
+            line("Page 1 sur 1", 0, 900, 200, 20),
+        ];
+        assert!(!mostly_vertical(&upright));
     }
 
     /// Un mot coupé par le bord du recadrage est recollé d'après la page ; un mot
