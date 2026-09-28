@@ -41,7 +41,10 @@ pub fn clean_image(image: &DynamicImage, name: &str) -> DynamicImage {
 const ANGLE_ESTIMATION_SIDE: u32 = 2400;
 
 fn clean_image_inner(image: &DynamicImage, name: &str) -> DynamicImage {
-    let sample = if image.width().max(image.height()) > ANGLE_ESTIMATION_SIDE {
+    // La seconde passe travaille elle aussi sur l'image plafonnée : rotation et
+    // suppression d'ombre en pleine résolution coûtaient encore plus d'une seconde, et à
+    // 2400 px la capitale d'une photo de téléphone garde une trentaine de pixels.
+    let image = &if image.width().max(image.height()) > ANGLE_ESTIMATION_SIDE {
         image.resize(
             ANGLE_ESTIMATION_SIDE,
             ANGLE_ESTIMATION_SIDE,
@@ -50,7 +53,7 @@ fn clean_image_inner(image: &DynamicImage, name: &str) -> DynamicImage {
     } else {
         image.clone()
     };
-    let whithout_shadow_image = remove_shadows(&sample, name);
+    let whithout_shadow_image = remove_shadows(image, name);
     let angle = angle(&whithout_shadow_image, name);
 
     let rotated_image = rotate(image, -angle);
