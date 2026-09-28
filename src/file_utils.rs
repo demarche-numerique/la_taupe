@@ -79,7 +79,10 @@ pub fn pdf_page_to_img_bytes(file: Vec<u8>, page: u32) -> Vec<u8> {
             stdin.write_all(&file).expect("Failed to write to stdin");
         });
 
-        child.wait_with_output().expect("Failed to wait on child").stdout
+        child
+            .wait_with_output()
+            .expect("Failed to wait on child")
+            .stdout
     })
 }
 

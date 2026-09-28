@@ -197,7 +197,11 @@ pub fn zoom_and_extract(
 
 /// Libellé de titulaire posé à gauche du bloc d'un code postal, dans la hauteur de ce
 /// bloc — le plus proche au-dessus du code postal —, rendu par son haut et son bord droit.
-fn side_label(text_lines: &[TextLine], anchor: &Anchor, holder_label: &Regex) -> Option<(u32, u32)> {
+fn side_label(
+    text_lines: &[TextLine],
+    anchor: &Anchor,
+    holder_label: &Regex,
+) -> Option<(u32, u32)> {
     let (_, mask_top, _, _) = anchor.addr_mask();
     let block_top = mask_top as i32;
     let block_bottom = anchor.bottom_right.y as i32;
@@ -225,7 +229,12 @@ fn side_mask(anchor: &Anchor, (label_top, label_right): (u32, u32)) -> (u32, u32
     let y = label_top.saturating_sub(anchor.height / 2);
     let bottom = anchor.bottom_right.y + anchor.height / 2;
 
-    (x, y, right.saturating_sub(x).max(1), bottom.saturating_sub(y).max(1))
+    (
+        x,
+        y,
+        right.saturating_sub(x).max(1),
+        bottom.saturating_sub(y).max(1),
+    )
 }
 
 /// Vrai si la page se lit de haut en bas : la plupart de ses lignes un peu longues sont
@@ -980,7 +989,10 @@ mod tests {
             "ASSOCIATION PALETTE ET PINCEAUX\n44100 NANTES"
         );
         // absent de la page : rien ne change
-        assert_eq!(complete_cut_words("M MATISSE HENRI", &page), "M MATISSE HENRI");
+        assert_eq!(
+            complete_cut_words("M MATISSE HENRI", &page),
+            "M MATISSE HENRI"
+        );
         // trop court pour être situé sûrement : « DE » n'est pas prolongé
         assert_eq!(complete_cut_words("DE", &page), "DE");
     }
@@ -1007,7 +1019,8 @@ mod tests {
     /// titulaire d'une personne morale.
     #[test]
     fn a_legal_form_anchors_a_company_holder() {
-        let text = "Intitulé du compte\nASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES";
+        let text =
+            "Intitulé du compte\nASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES";
         assert_eq!(
             trim_holder(text, &postal_code()).as_deref(),
             Some("ASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES")

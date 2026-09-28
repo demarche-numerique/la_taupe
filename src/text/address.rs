@@ -367,7 +367,10 @@ Banque de France
         let row = |left: &str, right: &str| format!("{:<40}{:>60}", left, right);
         let text = [
             // le libellé commence avant le bloc et finit avant la colonne du code postal
-            format!("{:<40}{:<60}", "  Agence", "                         Intitulé du compte"),
+            format!(
+                "{:<40}{:<60}",
+                "  Agence", "                         Intitulé du compte"
+            ),
             row("DIRECTION DES PEINTRES", "FONDATION CLAUDE MONET"),
             String::new(),
             String::new(),
