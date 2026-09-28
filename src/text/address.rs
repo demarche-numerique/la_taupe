@@ -30,7 +30,37 @@ fn civility_index(lines: &[String]) -> Option<usize> {
     lines.iter().position(|line| civility.is_match(line))
 }
 
+/// La traduction du libellé, seule sur sa ligne sous « Titulaire du compte » :
+/// « Account holder », « (Account Owner) ».
+pub fn is_english_label(line: &str) -> bool {
+    Regex::new(r"(?i)^\s*\(?\s*account\s+(holder|owner|name)\s*\)?\s*:?\s*$")
+        .unwrap()
+        .is_match(line)
+}
+
+/// Première ligne d'un bloc qui nomme un réseau bancaire : c'est la domiciliation, pas
+/// le titulaire. Deux blocs adressés sans libellé — la banque à gauche, le titulaire à
+/// droite — et c'est le premier trouvé qui l'emportait. La liste s'en tient aux noms de
+/// réseaux : « Caisse » seul désigne aussi des titulaires (caisse des écoles, CPAM), et
+/// une trésorerie est titulaire de son compte à la Banque de France.
+fn names_a_bank(line: &str) -> bool {
+    Regex::new(
+        r"(?i)^\s*(banque\b|bank\b|cr[ée]dit\s+(agricole|mutuel|lyonnais|coop[ée]ratif|du\s+nord|maritime)|caisse\s+d.[ée]pargne|soci[ée]t[ée]\s+g[ée]n[ée]rale|bnp\b|lcl\b|hsbc\b|bred\b|cic\b|la\s+banque\s+postale|tr[ée]sor\s+public\b)",
+    )
+    .unwrap()
+    .is_match(line)
+}
+
 impl Addr {
+    /// Vrai si le bloc commence par le nom d'un réseau bancaire.
+    pub fn is_bank_block(&self) -> bool {
+        self.inner_lines
+            .iter()
+            .map(|l| l.trim())
+            .find(|l| !l.is_empty())
+            .is_some_and(names_a_bank)
+    }
+
     pub fn lines(&self) -> Vec<String> {
         let header = Regex::new(r"(?i)(titulaire|intitulé|identit[e|é] bancaire)").unwrap();
         let intitule = Regex::new(r"(?i)(intitulé du compte)").unwrap();
@@ -61,6 +91,7 @@ impl Addr {
             })
             .map(|line| intitule.replace_all(&line, "").to_string())
             .filter(|line| !header.is_match(line))
+            .filter(|line| !is_english_label(line))
             .map(|line| line.trim().to_string())
             .collect()
     }
@@ -119,6 +150,7 @@ pub fn find_account_holder_addr(text: &str) -> Option<Addr> {
     }
     let addr = addresses
         .filter(|addr| addr.addr_type == AddrType::Unknown)
+        .filter(|addr| !addr.is_bank_block())
         .collect::<Vec<Addr>>()
         .first()
         .cloned();
@@ -277,6 +309,63 @@ mod tests {
                 "SAS HENRI MATISSE",
                 "18 RUE SADI CARNOT",
                 "92120 MONTROUGE"
+            ]))
+        );
+    }
+
+    /// Deux blocs adressés sans libellé : la banque à gauche, le titulaire à droite.
+    /// Le bloc qui commence par un nom de banque est la domiciliation.
+    #[test]
+    fn a_block_naming_a_bank_is_not_the_holder() {
+        let text = "\
+Banque de France
+1, Rue la Vrillière                             TRESORERIE
+75001 PARIS                                     DE CEZANNE
+                                                1 BD HENRI MATISSE
+                                                95200 SARCELLES";
+
+        assert_eq!(
+            find_account_holder_addr(text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "TRESORERIE",
+                "DE CEZANNE",
+                "1 BD HENRI MATISSE",
+                "95200 SARCELLES"
+            ]))
+        );
+    }
+
+    /// Une caisse des écoles est un titulaire, pas une banque.
+    #[test]
+    fn a_school_fund_is_not_mistaken_for_a_bank() {
+        let text = "CAISSE DES ECOLES\n1 PLACE DE LA MAIRIE\n44100 NANTES";
+
+        assert_eq!(
+            find_account_holder_addr(text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "CAISSE DES ECOLES",
+                "1 PLACE DE LA MAIRIE",
+                "44100 NANTES"
+            ]))
+        );
+    }
+
+    /// La traduction du libellé, seule sur sa ligne, n'est pas une ligne du titulaire.
+    #[test]
+    fn the_translated_label_is_dropped() {
+        let text = "\
+Nom de la banque                       Titulaire du compte
+Name of the bank                       Account holder
+Tresor public                          REGIE DES PEINTRES
+                                       Route de Giverny
+                                       34199 MONTPELLIER Cedex5";
+
+        assert_eq!(
+            find_account_holder_addr(text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "REGIE DES PEINTRES",
+                "Route de Giverny",
+                "34199 MONTPELLIER Cedex5"
             ]))
         );
     }

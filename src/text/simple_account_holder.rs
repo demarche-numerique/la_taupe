@@ -1,5 +1,6 @@
 use regex::Regex;
 
+use super::address::is_english_label;
 use super::patch::{right_complete, Patch};
 
 /// Un titulaire tient rarement en plus de six lignes : libellé, deux noms, complément,
@@ -101,6 +102,7 @@ fn clean(lines: Vec<String>) -> Option<Vec<String>> {
             }
         })
         .filter(|line| !headers.is_match(line))
+        .filter(|line| !is_english_label(line))
         .filter(|line| !line.is_empty())
         .map(|line| {
             if line.contains(':') {
