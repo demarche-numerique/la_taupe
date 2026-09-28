@@ -52,6 +52,23 @@ pub fn zoom_and_extract(
     let iban_regex = Regex::new(r"(?:^|\s)FR[\dO]").unwrap();
 
     let (page_text, text_lines, maybe_anchors) = recognize_anchors(img, &iban_regex, None);
+
+    // Page lue de haut en bas sans que l'IBAN y soit lu : toute la suite de la cascade —
+    // recadrages autour d'ancres hautes de trois cents pixels — tomberait à côté. On la
+    // mène sur la page redressée.
+    let turned;
+    let (img, page_text, text_lines, maybe_anchors) =
+        if extract_iban(&page_text).is_none() && mostly_vertical(&text_lines) {
+            match turn_upright(img, &iban_regex) {
+                Some((image, text, lines, anchors)) => {
+                    turned = image;
+                    (&turned, text, lines, anchors)
+                }
+                None => (img, page_text, text_lines, maybe_anchors),
+            }
+        } else {
+            (img, page_text, text_lines, maybe_anchors)
+        };
     let maybe_anchor = maybe_anchors.first();
 
     // Empreinte de forme du texte de la page : des comptes, jamais le texte. On garde la
@@ -254,6 +271,32 @@ fn upright(
             let same_iban = extract_iban(&text).as_deref() == Some(iban);
 
             (same_iban && !mostly_vertical(&lines)).then_some((rotated, lines))
+        })
+}
+
+/// Relit une page pivotée d'un quart de tour dans les deux sens, et garde la lecture la
+/// plus probante : celle qui donne un IBAN, sinon celle qui porte le plus d'ancres
+/// d'IBAN, puis le plus de vocabulaire de RIB, puis de caractères — le sens tête en bas
+/// lit du bruit.
+fn turn_upright(
+    img: &DynamicImage,
+    iban_regex: &Regex,
+) -> Option<(DynamicImage, String, Vec<TextLine>, Vec<Anchor>)> {
+    [img.rotate90(), img.rotate270()]
+        .into_iter()
+        .map(|rotated| {
+            let (text, lines, anchors) = recognize_anchors(&rotated, iban_regex, None);
+            (rotated, text, lines, anchors)
+        })
+        .filter(|(_, _, lines, _)| !mostly_vertical(lines))
+        .max_by_key(|(_, text, _, anchors)| {
+            let stats = TextStats::of(text);
+            (
+                extract_iban(text).is_some(),
+                anchors.len(),
+                stats.vocabulary_hits,
+                stats.alphas + stats.digits,
+            )
         })
 }
 
