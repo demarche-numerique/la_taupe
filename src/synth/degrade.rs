@@ -141,7 +141,7 @@ impl Degradation {
 
 /// Recadre sur la zone imprimée, avec une marge. Une photo cadre le document, là où un
 /// scan conserve la page entière et ses blancs.
-fn crop_to_content(img: &DynamicImage, margin_ratio: f32) -> DynamicImage {
+pub fn crop_to_content(img: &DynamicImage, margin_ratio: f32) -> DynamicImage {
     let gray = img.to_luma8();
     let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0u32, 0u32);
 
