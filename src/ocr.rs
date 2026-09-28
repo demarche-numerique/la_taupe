@@ -418,6 +418,7 @@ fn zoom_and_extract_account_holder_traced(
     // un libellé de titulaire passent en premier, et l'examen s'arrête au premier bloc
     // convaincant.
     provenance.postal_anchors = postal_anchors.len() as u32;
+    let page_lines: Vec<String> = text_lines.iter().map(|l| l.to_string()).collect();
 
     let mut ranked: Vec<(usize, &Anchor, i32)> = postal_anchors
         .iter()
@@ -467,7 +468,10 @@ fn zoom_and_extract_account_holder_traced(
                 None
             }
         };
-        if let Some(holder) = text.and_then(|t| trim_holder(&t, &code_postal_line_regex)) {
+        if let Some(holder) = text
+            .and_then(|t| trim_holder(&t, &code_postal_line_regex))
+            .map(|h| complete_cut_words(&h, &page_lines))
+        {
             let labelled = holder_label.is_match(&holder);
             account_holders.push(holder);
             // le premier bloc porteur d'un libellé — ou le premier tout court quand la
@@ -550,7 +554,83 @@ fn trim_holder(text: &str, postal_code: &Regex) -> Option<String> {
         return None;
     }
 
-    Some(lines[..end].join("\n"))
+    let kept: Vec<&str> = lines[..end]
+        .iter()
+        .copied()
+        .filter(|line| !is_label_or_noise(line))
+        .collect();
+
+    (!kept.is_empty()).then(|| kept.join("\n"))
+}
+
+/// Recolle les mots que le bord du recadrage a coupés, d'après la lecture pleine page.
+///
+/// Le masque d'adresse est calé sur la largeur du code postal : assez pour un nom de
+/// personne, pas pour une raison sociale — « ASSOCIATION PALETTE ET PINC »,
+/// « ATION DES AMIS DE ». La page, lue une fois pour toutes, porte souvent la ligne
+/// entière. On ne complète que le premier et le dernier mot d'une ligne, et seulement
+/// quand la ligne se retrouve telle quelle dans la page : jamais de mot ajouté, pour
+/// ne pas happer la colonne voisine.
+fn complete_cut_words(holder: &str, page_lines: &[String]) -> String {
+    holder
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            // une ligne courte se retrouve n'importe où, au milieu d'autres mots : on
+            // n'y touche pas
+            if line.chars().count() < 8 {
+                return line.to_string();
+            }
+            let is_word = |c: char| c.is_alphanumeric();
+
+            // chaque occurrence, étendue vers la gauche jusqu'au début du mot et vers la
+            // droite jusqu'à sa fin — une ligne d'un RIB imprimé en deux ou trois
+            // exemplaires se retrouve autant de fois
+            let completions: Vec<String> = page_lines
+                .iter()
+                .flat_map(|page| page.match_indices(line).map(move |(at, _)| (page, at)))
+                .map(|(page, at)| {
+                    let start = page[..at]
+                        .char_indices()
+                        .rev()
+                        .take_while(|(_, c)| is_word(*c))
+                        .last()
+                        .map_or(at, |(i, _)| i);
+                    let end = at + line.len();
+                    let stop = page[end..]
+                        .char_indices()
+                        .find(|(_, c)| !is_word(*c))
+                        .map_or(page.len(), |(i, _)| end + i);
+                    page[start..stop].to_string()
+                })
+                .collect();
+
+            // seulement si toutes les occurrences disent la même chose
+            match completions.split_first() {
+                Some((first, rest)) if rest.iter().all(|c| c == first) => first.clone(),
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Ligne qui n'appartient pas au titulaire bien qu'elle tombe dans son bloc : un
+/// libellé seul sur sa ligne — la traduction « (Account Owner) », « Adresse : » —, la
+/// rangée de chiffres du RIB, ou le bruit qu'une photo fait lire dans un filet de
+/// tableau (« 2=====k===m=== »).
+pub fn is_label_or_noise(line: &str) -> bool {
+    let label = Regex::new(
+        r"(?i)^\s*\(?\s*(account\s+(holder|owner|name)|adresse|address|rib)\s*\)?\s*:?\s*$",
+    )
+    .unwrap();
+    let digits_only = Regex::new(r"^[\d\s]{12,}$").unwrap();
+
+    let chars: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+    let alnum = chars.iter().filter(|c| c.is_alphanumeric()).count();
+    let noisy = !chars.is_empty() && alnum * 2 < chars.len();
+
+    label.is_match(line) || digits_only.is_match(line.trim()) || noisy
 }
 
 fn crop(
@@ -678,6 +758,49 @@ mod tests {
         assert!(match_civilite("HENRI MATISSE OU FRIDA KAHLO"));
         assert!(match_civilite("Madame Kahlo Frida"));
         assert!(!match_civilite("51 RUE BERNARD ROY"));
+    }
+
+    /// Un mot coupé par le bord du recadrage est recollé d'après la page ; un mot
+    /// entier n'est jamais prolongé, et aucun mot n'est ajouté.
+    #[test]
+    fn words_cut_by_the_crop_are_completed_from_the_page() {
+        let page = vec![
+            "ASSOCIATION DES AMIS DE LA PALETTE".to_string(),
+            "IBAN FR76 3000 1000".to_string(),
+            "ASSOCIATION PALETTE ET PINCEAUX   Domiciliation".to_string(),
+            "44100 NANTES".to_string(),
+        ];
+
+        assert_eq!(
+            complete_cut_words("ATION DES AMIS DE LA PALETTE", &page),
+            "ASSOCIATION DES AMIS DE LA PALETTE"
+        );
+        assert_eq!(
+            complete_cut_words("ASSOCIATION PALETTE ET PINC\n44100 NANTES", &page),
+            "ASSOCIATION PALETTE ET PINCEAUX\n44100 NANTES"
+        );
+        // absent de la page : rien ne change
+        assert_eq!(complete_cut_words("M MATISSE HENRI", &page), "M MATISSE HENRI");
+        // trop court pour être situé sûrement : « DE » n'est pas prolongé
+        assert_eq!(complete_cut_words("DE", &page), "DE");
+    }
+
+    /// Libellés seuls sur leur ligne, rangée de chiffres du RIB et bruit de filet ne
+    /// font pas partie du titulaire ; ses vraies lignes restent.
+    #[test]
+    fn labels_and_noise_are_dropped_from_the_block() {
+        let text = "Titulaire du compte\n(Account Owner)\nASSOC. LES AMIS DE CEZANNE\nADRESSE :\n12 RUE DES GRIVES\n44100 NANTES";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("ASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES")
+        );
+
+        assert!(is_label_or_noise("2===============k=========k==m====="));
+        assert!(is_label_or_noise("30001 00064 49190095620 88"));
+        assert!(is_label_or_noise("RIB"));
+        assert!(!is_label_or_noise("BP 10001"));
+        assert!(!is_label_or_noise("ASS FAUVE (EX NABIS)"));
+        assert!(!is_label_or_noise("ART 'NEUF' DECO 'BIS"));
     }
 
     /// Une forme juridique en tête de ligne tient lieu de civilité : c'est le début du

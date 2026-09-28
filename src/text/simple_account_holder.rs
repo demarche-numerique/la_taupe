@@ -103,6 +103,7 @@ fn clean(lines: Vec<String>) -> Option<Vec<String>> {
         })
         .filter(|line| !headers.is_match(line))
         .filter(|line| !is_english_label(line))
+        .filter(|line| !crate::ocr::is_label_or_noise(line))
         .filter(|line| !line.is_empty())
         .map(|line| {
             if line.contains(':') {
