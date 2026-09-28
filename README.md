@@ -218,6 +218,11 @@ titulaires de plus sur les scans du corpus ouvert, mais le temps des scans doubl
 9,8 s) ; à 220 dpi, un titulaire perdu sur `ibans_2` et un document à 14,5 s. La
 faiblesse des scans en prod ne tient pas à la résolution de rastérisation.
 
+**Écarter du bloc les lignes de contact** (téléphone, fax, courriel, site) et
+**accepter un code postal séparé de la ville par un tiret sur le chemin image**, comme
+le chemin texte : justes l'un et l'autre, neutres sur le corpus ouvert, ses photos et
+les deux corpus réels.
+
 **Réparer un code postal abîmé par l'OCR** (« 80 O90 AMIENS ») quand la ville lue
 confirme le code réparé dans le référentiel des communes. Neutre sur les photos du
 corpus ouvert : les codes réparables sont dans des blocs qui ont d'autres défauts.
