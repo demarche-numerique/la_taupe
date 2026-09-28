@@ -213,6 +213,12 @@ recadrage qui part du libellé « Intitulé du compte » coupait les noms longs 
 droite, que le masque aligné à droite lisait entiers : −8 titulaires sur les photos du
 corpus ouvert. Gardé en dernier recours seulement, où il ne fait qu'ajouter.
 
+**Réparer un code postal abîmé par l'OCR** (« 80 O90 AMIENS ») quand la ville lue
+confirme le code réparé dans le référentiel des communes. Neutre sur les photos du
+corpus ouvert : les codes réparables sont dans des blocs qui ont d'autres défauts.
+Attention au référentiel, à jour des communes nouvelles : 93380 y est Saint-Denis, plus
+Pierrefitte.
+
 **Recoller un mot coupé d'après ses deux voisins** quand la ligne entière ne se
 retrouve pas dans la lecture pleine page. Aucun gain, et deux titulaires perdus en
 comparaison stricte : le mot complété emportait la ponctuation qui le suivait.
