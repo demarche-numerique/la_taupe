@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::file_utils::{list_img_in_pdf, pdf_to_img_bytes};
+use crate::file_utils::{largest_image_page, pdf_page_to_img_bytes, pdf_to_img_bytes};
 use crate::provenance::{Engine, Provenance, Route};
 use crate::rib::Rib;
 use crate::{
@@ -73,13 +73,14 @@ pub fn vec_to_rib_traced(
             if rib.is_some() {
                 provenance.engine = Some(Engine::PdfText);
                 Ok(rib)
-            // if there is only one image in PDF, it could be a scan of a RIB
-            // with some poorly parse text.
-            // don't try it for all as it is costly
-            } else if list_img_in_pdf(content.clone()) == 1 {
+            // Rien dans la couche texte : le RIB peut être une image — scan mal
+            // océrisé, RIB collé dans un bulletin d'adhésion ou une notice, à côté
+            // d'un logo, parfois pages plus loin. On lit la page de la plus grande
+            // image, une seule : c'est une OCR, donc coûteuse.
+            } else if let Some(page) = largest_image_page(content.clone()) {
                 provenance.route = Some(Route::PdfImage);
 
-                let img = pdf_to_img_bytes(content);
+                let img = pdf_page_to_img_bytes(content, page);
                 Ok(image_bytes_to_rib_traced(img, name, provenance))
             } else {
                 Ok(None)
