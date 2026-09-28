@@ -178,6 +178,39 @@ pub fn zoom_and_extract(
     None
 }
 
+/// Libellé de titulaire posé à gauche du bloc d'un code postal, dans la hauteur de ce
+/// bloc — le plus proche au-dessus du code postal —, rendu par son haut et son bord droit.
+fn side_label(text_lines: &[TextLine], anchor: &Anchor, holder_label: &Regex) -> Option<(u32, u32)> {
+    let (_, mask_top, _, _) = anchor.addr_mask();
+    let block_top = mask_top as i32;
+    let block_bottom = anchor.bottom_right.y as i32;
+    let postal_left = anchor.top_left.x as i32;
+
+    text_lines
+        .iter()
+        .filter(|line| holder_label.is_match(&line.to_string()))
+        .map(|line| line.bounding_rect())
+        .filter(|r| {
+            let center = (r.top() + r.bottom()) / 2;
+            center >= block_top && center <= block_bottom && r.right() <= postal_left
+        })
+        .max_by_key(|r| r.top())
+        .map(|r| (r.top().max(0) as u32, r.right().max(0) as u32))
+}
+
+/// Recadrage du bloc entre la hauteur du libellé et le code postal. Vers la gauche, il
+/// va aussi loin que le masque aligné à droite — un nom aligné à droite déborde du code
+/// postal — sans passer le libellé.
+fn side_mask(anchor: &Anchor, (label_top, label_right): (u32, u32)) -> (u32, u32, u32, u32) {
+    let (align_x, _, width, _) = anchor.right_align_addr_mask();
+    let x = align_x.max(label_right);
+    let right = align_x + width;
+    let y = label_top.saturating_sub(anchor.height / 2);
+    let bottom = anchor.bottom_right.y + anchor.height / 2;
+
+    (x, y, right.saturating_sub(x).max(1), bottom.saturating_sub(y).max(1))
+}
+
 /// Vrai si la page se lit de haut en bas : la plupart de ses lignes un peu longues sont
 /// plus hautes que larges. C'est une photo prise appareil tourné d'un quart de tour.
 fn mostly_vertical(lines: &[TextLine]) -> bool {
@@ -512,6 +545,15 @@ fn zoom_and_extract_account_holder_traced(
                 && !domiciliation.is_match(&new_text)
             {
                 Some(new_text)
+            } else if let Some(label) = side_label(&text_lines, anchor, &holder_label) {
+                // Libellé à gauche, titulaire aligné à droite sur les mêmes lignes : le
+                // libellé sort des deux recadrages, et rien d'autre ne désigne le bloc
+                // d'une personne morale sans forme juridique. Il en donne pourtant la
+                // première ligne : on recadre de sa hauteur jusqu'au code postal, ce
+                // qui laisse dehors la date et le numéro d'agence posés au-dessus, et
+                // on lit ce recadrage comme étiqueté.
+                let side = read_mask(index, side_mask(anchor, label), "side_label_mask");
+                (!domiciliation.is_match(&side)).then(|| format!("Titulaire\n{}", side))
             } else {
                 None
             }
@@ -824,6 +866,35 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    /// « Intitulé du compte » à gauche, titulaire aligné à droite : le libellé est
+    /// rattaché au bloc du code postal qu'il borde, pas à un code postal plus haut ni à
+    /// un libellé posé à droite.
+    #[test]
+    fn a_label_on_the_left_of_the_block_is_found() {
+        let label = Regex::new(r"(?i)(titulaire|intitul[ée])").unwrap();
+        // code postal à x = 1000, y = 400, lignes de 20 px
+        let postal = Anchor::new(Point::new(1000, 400), Point::new(1100, 420));
+        let lines = vec![
+            line("21/01/2021", 200, 1400, 20, 200),
+            line("Intitulé du compte", 300, 100, 20, 300),
+            line("ASSOC. LES AMIS DE CEZANNE", 300, 900, 20, 600),
+            line("74103 ANNEMASSE", 400, 1000, 20, 300),
+        ];
+
+        // bord droit à un pixel près : l'aide répartit la largeur entre les caractères
+        assert_eq!(side_label(&lines, &postal, &label), Some((300, 399)));
+        // le recadrage part du libellé, pas de la date au-dessus, et va vers la gauche
+        // comme le masque aligné à droite, cinq largeurs de code postal
+        let (x, y, _, height) = side_mask(&postal, (300, 400));
+        assert_eq!((x, y, y + height), (500, 290, 430));
+        // sans passer le libellé quand il est plus près
+        assert_eq!(side_mask(&postal, (300, 700)).0, 700);
+
+        // un libellé à droite du code postal ne compte pas
+        let right = vec![line("Titulaire", 300, 1500, 20, 200)];
+        assert_eq!(side_label(&right, &postal, &label), None);
     }
 
     /// Une page lue de haut en bas a des lignes plus hautes que larges ; une page droite
