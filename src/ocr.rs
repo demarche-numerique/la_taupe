@@ -209,11 +209,24 @@ fn find_civilite(s: &str) -> Option<usize> {
             .unwrap();
     let prenom_nom_ou =
         Regex::new(r"[[:upper:]]+ +[[:upper:]]+ +OU +[[:upper:]]+ +[[:upper:]]+").unwrap();
+    // Une personne morale n'a pas de civilité : sa forme juridique en tête de ligne joue
+    // le même rôle — « ASSOC. LES AMIS DE… », « SARL LES FAUVES ». En majuscules
+    // seulement, et sans « SA » : trop court pour ne pas surgir au milieu d'un mot lu.
+    let legal_form = Regex::new(
+        r"(?m)^\s*(ASSOCIATION|ASSOC\.?|ASS|SASU|SAS|SARL|S\.A\.R\.L\.|EURL|SCI|SCP|SELARL|EARL|GAEC|SCEA|SNC|GIE|SCOP|FONDATION)\s",
+    )
+    .unwrap();
 
     civilite
         .find(s)
         .or_else(|| prenom_nom_ou.find(s))
         .map(|m| m.start())
+        .or_else(|| {
+            legal_form
+                .captures(s)
+                .and_then(|c| c.get(1))
+                .map(|m| m.start())
+        })
 }
 
 /// Lit le BIC : par motif dans le texte de la page, d'abord tel quel, puis les
@@ -436,7 +449,9 @@ fn zoom_and_extract_account_holder_traced(
         if domiciliation.is_match(&text) && !holder_label.is_match(&text) {
             continue;
         }
-        let text = if match_civilite(&text) {
+        // Un bloc porteur du libellé de titulaire est désigné par le document même sans
+        // civilité — le cas de toute personne morale ; `trim_holder` sait s'y ancrer.
+        let text = if match_civilite(&text) || holder_label.is_match(&text) {
             Some(text)
         } else {
             let new_text = read_mask(
@@ -444,7 +459,9 @@ fn zoom_and_extract_account_holder_traced(
                 anchor.right_align_addr_mask(),
                 "right_align_addr_mask",
             );
-            if match_civilite(&new_text) && !domiciliation.is_match(&new_text) {
+            if (match_civilite(&new_text) || holder_label.is_match(&new_text))
+                && !domiciliation.is_match(&new_text)
+            {
                 Some(new_text)
             } else {
                 None
@@ -661,5 +678,20 @@ mod tests {
         assert!(match_civilite("HENRI MATISSE OU FRIDA KAHLO"));
         assert!(match_civilite("Madame Kahlo Frida"));
         assert!(!match_civilite("51 RUE BERNARD ROY"));
+    }
+
+    /// Une forme juridique en tête de ligne tient lieu de civilité : c'est le début du
+    /// titulaire d'une personne morale.
+    #[test]
+    fn a_legal_form_anchors_a_company_holder() {
+        let text = "Intitulé du compte\nASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("ASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES")
+        );
+        assert!(match_civilite("SARL LES FAUVES"));
+        // en minuscules ou au milieu d'une ligne, ce n'est pas une forme juridique
+        assert!(!match_civilite("la classe de 2nde"));
+        assert!(!match_civilite("CODE BANQUE SAS 12345"));
     }
 }
