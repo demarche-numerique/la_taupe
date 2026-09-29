@@ -102,7 +102,10 @@ fn page_size_pts(file: &[u8], page: u32) -> Option<(f32, f32)> {
 fn parse_page_size(info: &str, page: &str) -> Option<(f32, f32)> {
     info.lines().find_map(|line| {
         let rest = line.strip_prefix("Page")?.trim_start();
-        let rest = rest.strip_prefix(page)?.trim_start().strip_prefix("size:")?;
+        let rest = rest
+            .strip_prefix(page)?
+            .trim_start()
+            .strip_prefix("size:")?;
         let mut dims = rest.split_whitespace();
         let width = dims.next()?.parse().ok()?;
         (dims.next()? == "x").then_some(())?;
