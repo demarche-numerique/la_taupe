@@ -75,15 +75,16 @@ pub fn vec_to_rib_traced(
                 Ok(rib)
             // Rien dans la couche texte : le RIB peut être une image — scan mal
             // océrisé, RIB collé dans un bulletin d'adhésion ou une notice, à côté
-            // d'un logo, parfois pages plus loin. On lit la page de la plus grande
-            // image, une seule : c'est une OCR, donc coûteuse.
-            } else if let Some(page) = largest_image_page(content.clone()) {
+            // d'un logo, parfois pages plus loin — et on lit alors la page de la plus
+            // grande image. Sans image, la couche texte peut être illisible — polices
+            // sans table Unicode, texte vectorisé — et le RIB n'est visible qu'à l'œil :
+            // on lit la première page. Une seule page : c'est une OCR, donc coûteuse.
+            } else {
                 provenance.route = Some(Route::PdfImage);
 
+                let page = largest_image_page(content.clone()).unwrap_or(1);
                 let img = pdf_page_to_img_bytes(content, page);
                 Ok(image_bytes_to_rib_traced(img, name, provenance))
-            } else {
-                Ok(None)
             }
         } else {
             provenance.route = Some(Route::PdfImage);
@@ -170,6 +171,25 @@ impl TryFrom<(&Path, Option<Hint>)> for Analysis {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un PDF dont la couche texte existe mais n'est pas lisible — polices sans table
+    /// Unicode, texte vectorisé — et qui ne contient aucune image : le RIB n'est visible
+    /// qu'à l'œil. Sept PDF texte de la campagne de production échouaient ainsi, sans
+    /// OCR, en quelques dizaines de millisecondes. La fixture : un RIB fictif en tracés
+    /// vectoriels sous une couche de glyphes sans correspondance.
+    #[test]
+    fn a_text_layer_without_a_rib_falls_back_to_ocr() {
+        let content = std::fs::read("tests/fixtures/rib/text_layer_without_rib.pdf").unwrap();
+
+        let rib = vec_to_rib(content, "text_layer_without_rib.pdf")
+            .unwrap()
+            .expect("le RIB est lu par OCR");
+
+        assert_eq!(
+            crate::rib::normalize_iban(rib.iban()),
+            "FR7630001000644919009562088"
+        );
+    }
 
     /// Le champ n'apparaît que quand il est vrai : le JSON des clients existants ne
     /// change pas d'un octet.
