@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     fi_extract::IbanToBankName,
     text::{
-        address::find_account_holder_addr, communes::fix_holder_city,
+        address::find_account_holder_addr, cleanup::clean_holder, communes::fix_holder_city,
         simple_account_holder::find_simple_account_holder,
     },
 };
@@ -25,7 +25,9 @@ impl Rib {
 
         // la ligne de ville du titulaire est la plus souvent hachée par l'OCR ; le
         // code postal, lui, tient, et le référentiel des communes recoupe
-        let account_holder = account_holder.map(|h| fix_holder_city(&h));
+        let account_holder = account_holder
+            .and_then(|h| clean_holder(&h))
+            .map(|h| fix_holder_city(&h));
 
         Rib {
             account_holder,
