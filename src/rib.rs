@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     fi_extract::IbanToBankName,
     text::{
-        address::find_account_holder_addr, communes::fix_holder_city,
+        address::find_account_holder_addr, cleanup::clean_holder, communes::fix_holder_city,
         simple_account_holder::find_simple_account_holder,
     },
 };
@@ -25,7 +25,9 @@ impl Rib {
 
         // la ligne de ville du titulaire est la plus souvent hachée par l'OCR ; le
         // code postal, lui, tient, et le référentiel des communes recoupe
-        let account_holder = account_holder.map(|h| fix_holder_city(&h));
+        let account_holder = account_holder
+            .and_then(|h| clean_holder(&h))
+            .map(|h| fix_holder_city(&h));
 
         Rib {
             account_holder,
@@ -168,9 +170,12 @@ pub fn replace_char_by_digit_in_2_and_3_position(ibans: Vec<String>) -> Vec<Stri
 }
 
 pub fn extract_iban(text: &str) -> Option<String> {
-    let french_iban_re = Regex::new(r"(?<iban>FR[[[:digit:]]O]{2}([[[:space:]]\|,]*[[:alnum:]]{4}){5})([[[:space:]]|,]*[[:alnum:]][[:digit:]]{2})").unwrap();
+    // Les groupes sont séparés d'espaces, de barres de tableau, de virgules — ou de
+    // tirets, que certaines chaînes éditiques et les documents retapés à la main
+    // emploient : « FR 76 - 1007- 1860-… », « FR 96 – 3000 – 2048 – … ».
+    let french_iban_re = Regex::new(r"(?<iban>FR[[[:digit:]]O]{2}([[[:space:]]\|,\-–—]*[[:alnum:]]{4}){5})([[[:space:]]|,\-–—]*[[:alnum:]][[:digit:]]{2})").unwrap();
 
-    let to_remove = Regex::new(r"[[[:space:]]|,]*").unwrap();
+    let to_remove = Regex::new(r"[[[:space:]]|,\-–—]*").unwrap();
 
     let mut ibans = french_iban_re
         .find_iter(text)
@@ -212,7 +217,7 @@ pub fn extract_iban(text: &str) -> Option<String> {
         return Some(found_ibans[0].to_string());
     }
 
-    let lax_frenc_iban_re = Regex::new(r"(?<iban>FR[[:alnum:]]{2}([[[:space:]]\|]*[[:alnum:]]{4}){5})([[[:space:]]|]*[[:alnum:]][[:digit:]]{2})").unwrap();
+    let lax_frenc_iban_re = Regex::new(r"(?<iban>FR[[:alnum:]]{2}([[[:space:]]\|\-–—]*[[:alnum:]]{4}){5})([[[:space:]]|\-–—]*[[:alnum:]][[:digit:]]{2})").unwrap();
 
     let lax_ibans = lax_frenc_iban_re
         .find_iter(text)
@@ -415,6 +420,21 @@ mod tests {
         ";
 
         assert_eq!(extract_iban(iban_with_faults).unwrap(), iban);
+    }
+
+    /// Des tirets, courts ou longs, entre les groupes : l'IBAN reste reconnu.
+    #[test]
+    fn an_iban_with_dashed_groups_is_found() {
+        let iban = "FR76 3000 1000 6449 1900 9562 088";
+
+        assert_eq!(
+            extract_iban("Code IBAN      FR 76 - 3000- 1000-6449-1900-9562-088").as_deref(),
+            Some(iban)
+        );
+        assert_eq!(
+            extract_iban("FR 76 – 3000 – 1000 – 6449 – 1900 – 9562 – 088").as_deref(),
+            Some(iban)
+        );
     }
 
     #[test]
@@ -658,6 +678,21 @@ mod tests {
             "44240 LA CHAPELLE SUR ERDRE",
         ]);
         let bic = "CEPAFRPP444";
+        test_file(path, account_holder, IBAN, bic);
+    }
+
+    /// Gabarit bilingue « Relevé d'Identité Bancaire / Bank details statement » : le
+    /// titulaire à gauche d'un long texte explicatif, le libellé traduit collé au sien,
+    /// le bloc imprimé trois fois. Relevé en échec sur la campagne de production.
+    #[test]
+    fn rib_caisse_epargne_4() {
+        let path = "tests/fixtures/rib/caisse_epargne_4.txt";
+        let account_holder = Some(vec![
+            "M HENRI DEGAS OU MLLE ROSA MONET",
+            "11 AVENUE DU MARECHAL LECLERC",
+            "33400 TALENCE",
+        ]);
+        let bic = "CEPAFRPP333";
         test_file(path, account_holder, IBAN, bic);
     }
 

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::file_utils::{list_img_in_pdf, pdf_to_img_bytes};
+use crate::file_utils::{largest_image_page, pdf_page_to_img_bytes, pdf_to_img_bytes};
 use crate::provenance::{Engine, Provenance, Route};
 use crate::rib::Rib;
 use crate::{
@@ -73,16 +73,18 @@ pub fn vec_to_rib_traced(
             if rib.is_some() {
                 provenance.engine = Some(Engine::PdfText);
                 Ok(rib)
-            // if there is only one image in PDF, it could be a scan of a RIB
-            // with some poorly parse text.
-            // don't try it for all as it is costly
-            } else if list_img_in_pdf(content.clone()) == 1 {
+            // Rien dans la couche texte : le RIB peut être une image — scan mal
+            // océrisé, RIB collé dans un bulletin d'adhésion ou une notice, à côté
+            // d'un logo, parfois pages plus loin — et on lit alors la page de la plus
+            // grande image. Sans image, la couche texte peut être illisible — polices
+            // sans table Unicode, texte vectorisé — et le RIB n'est visible qu'à l'œil :
+            // on lit la première page. Une seule page : c'est une OCR, donc coûteuse.
+            } else {
                 provenance.route = Some(Route::PdfImage);
 
-                let img = pdf_to_img_bytes(content);
+                let page = largest_image_page(content.clone()).unwrap_or(1);
+                let img = pdf_page_to_img_bytes(content, page);
                 Ok(image_bytes_to_rib_traced(img, name, provenance))
-            } else {
-                Ok(None)
             }
         } else {
             provenance.route = Some(Route::PdfImage);
@@ -169,6 +171,29 @@ impl TryFrom<(&Path, Option<Hint>)> for Analysis {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un PDF dont la couche texte existe mais n'est pas lisible — polices sans table
+    /// Unicode, texte vectorisé — et qui ne contient aucune image : le RIB n'est visible
+    /// qu'à l'œil. Sept PDF texte de la campagne de production échouaient ainsi, sans
+    /// OCR, en quelques dizaines de millisecondes. La fixture : un RIB fictif en tracés
+    /// vectoriels sous une couche de glyphes sans correspondance.
+    ///
+    /// Demande les modèles PP-OCR, absents de la CI :
+    ///     cargo test --release -- --ignored a_text_layer_without_a_rib
+    #[test]
+    #[ignore = "demande les modèles PP-OCR (download-models.sh)"]
+    fn a_text_layer_without_a_rib_falls_back_to_ocr() {
+        let content = std::fs::read("tests/fixtures/rib/text_layer_without_rib.pdf").unwrap();
+
+        let rib = vec_to_rib(content, "text_layer_without_rib.pdf")
+            .unwrap()
+            .expect("le RIB est lu par OCR");
+
+        assert_eq!(
+            crate::rib::normalize_iban(rib.iban()),
+            "FR7630001000644919009562088"
+        );
+    }
 
     /// Le champ n'apparaît que quand il est vrai : le JSON des clients existants ne
     /// change pas d'un octet.

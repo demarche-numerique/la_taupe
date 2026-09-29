@@ -86,6 +86,19 @@ Chaque nom de fichier porte sa recette (`012_lcl_pdf_img_h14_rot30.pdf`), ce qui
 au banc de rendre des courbes plutôt qu'un taux global : à quelle hauteur de capitale, à
 quel angle, à quel niveau de bruit la reconnaissance cède.
 
+    cargo run --release --features bench --bin synth -- --out <dir> \
+      --from <dossier de documents> --truth <leur truth.csv> [--seed N]
+
+photographie des documents existants plutôt que les gabarits : la page qui porte
+l'IBAN est rastérisée, cadrée sur la zone imprimée à une largeur fixe, puis passe par
+les recettes photo du générateur — prise ordinaire, prise bâclée, appareil tourné d'un
+quart de tour. La vérité est recopiée. Un même document mesuré propre et photographié
+isole l'effet de la seule prise de vue, sur des mises en page que les gabarits ne
+couvrent pas. C'est ainsi qu'a été mesuré un corpus de RIB publiés par des personnes
+morales (associations, établissements publics, entreprises) : aucune donnée de
+particulier, des titulaires sans civilité, et une variété de chaînes éditiques
+qu'aucun des deux corpus réels n'offre.
+
 ### Mesure
 
     cargo run --release --features bench --bin bench -- \
@@ -132,7 +145,10 @@ Spectaculaires en synthétique (documents pivotés 60 → 100 %), neutres à né
 réel : les documents pivotés sont déjà lus sans eux, et faire basculer un document de
 la branche tesseract vers ocrs accélère l'IBAN au prix du BIC et du titulaire. Le cas
 où le gain apparaît — un scan propre pivoté d'un quart de tour exact — n'existe dans
-aucun des deux corpus.
+aucun des deux corpus. Ce qui est resté, depuis : un redressement qui ne se déclenche
+que sur une page que PP-OCR lit de haut en bas — ses lignes plus hautes que larges — et
+seulement quand la lecture droite a échoué ou pour chercher le titulaire. Sur les
+photos réelles il lit les deux IBAN qui manquaient, en moins de temps.
 
 **Projection du texte OCR en grille, pour appliquer le chemin texte aux images.** La
 projection est fidèle, mais `text::patch::complete` coupe un bloc au premier
@@ -186,6 +202,36 @@ document, et un conflit de version ONNX Runtime avec oar-ocr. L'évaluation comp
 est rejouable dans `gitignored/gliner_eval/`. Contre-essai avec un NER français
 supervisé (`camembert-ner`, 110 M paramètres) : pire sur tout sauf la latence — la
 prose de Wikipédia ne prépare pas aux blocs en capitales des RIB.
+
+**Estimer l'inclinaison sur une image réduite à 1600 px.** Le gain de temps est réel
+sur les photos de téléphone, mais l'angle perd en précision sur les photos déjà
+modestes : deux IBAN de photos inclinées perdus, un titulaire réel. Retenu à 2400 px,
+où seules les grandes photos sont réduites.
+
+**Le libellé posé à gauche du bloc comme signal de classement.** Donner la priorité au
+recadrage qui part du libellé « Intitulé du compte » coupait les noms longs alignés à
+droite, que le masque aligné à droite lisait entiers : −8 titulaires sur les photos du
+corpus ouvert. Gardé en dernier recours seulement, où il ne fait qu'ajouter.
+
+**Rastériser les PDF image au-delà des 150 dpi de `pdftoppm`.** À 300 dpi, un ou deux
+titulaires de plus sur les scans du corpus ouvert, mais le temps des scans double (max
+9,8 s) ; à 220 dpi, un titulaire perdu sur `ibans_2` et un document à 14,5 s. La
+faiblesse des scans en prod ne tient pas à la résolution de rastérisation.
+
+**Écarter du bloc les lignes de contact** (téléphone, fax, courriel, site) et
+**accepter un code postal séparé de la ville par un tiret sur le chemin image**, comme
+le chemin texte : justes l'un et l'autre, neutres sur le corpus ouvert, ses photos et
+les deux corpus réels.
+
+**Réparer un code postal abîmé par l'OCR** (« 80 O90 AMIENS ») quand la ville lue
+confirme le code réparé dans le référentiel des communes. Neutre sur les photos du
+corpus ouvert : les codes réparables sont dans des blocs qui ont d'autres défauts.
+Attention au référentiel, à jour des communes nouvelles : 93380 y est Saint-Denis, plus
+Pierrefitte.
+
+**Recoller un mot coupé d'après ses deux voisins** quand la ligne entière ne se
+retrouve pas dans la lecture pleine page. Aucun gain, et deux titulaires perdus en
+comparaison stricte : le mot complété emportait la ponctuation qui le suivait.
 
 **Couper le bloc titulaire à la ligne de domiciliation** (libellé « domiciliation »,
 ou raison sociale de la banque résolue par le registre — deux mots sur la ligne).

@@ -23,9 +23,13 @@ impl Patch {
         let (_content, _before, left, right) = complete(text[index], start, end).unwrap();
 
         if up {
+            // bord gauche le plus à gauche atteint par le bloc : un bloc aligné à droite
+            // a des lignes plus longues que celle du code postal
+            let mut block_left = left;
             for i in (index.saturating_sub(6)..=index).rev() {
-                if let Some((content, before, _, _)) = complete(text[i], left, right) {
+                if let Some((content, before, line_left, _)) = complete(text[i], left, right) {
                     let should_stop = stop.is_match(&content) || stop.is_match(&before);
+                    block_left = block_left.min(line_left);
 
                     content_lines.insert(0, content);
                     context_lines.insert(0, before);
@@ -33,14 +37,36 @@ impl Patch {
                     if should_stop {
                         break;
                     }
+                } else if let Some(label) = label_over_block(text[i], stop, block_left, right) {
+                    // Le libellé posé au-dessus d'un bloc aligné à droite commence plus à
+                    // gauche que le code postal et s'arrête avant sa colonne : la ligne
+                    // était ignorée, et le bloc — « Intitulé du compte » pourtant — restait
+                    // sans type, battu par celui de l'agence voisine. Il le désigne et
+                    // le ferme.
+                    context_lines.insert(0, label);
+                    break;
                 }
             }
         } else {
-            for line in text
+            let mut started = false;
+            for (offset, line) in text
                 .iter()
                 .take((index + nb_line).min(text.len()))
                 .skip(index)
+                .enumerate()
             {
+                // Sous le libellé, une ligne blanche dans la colonne du libellé mais
+                // occupée ailleurs — la domiciliation, à droite — ferme le bloc : sans
+                // quoi `complete` s'élargit jusqu'au texte voisin et le bloc glisse dans
+                // l'autre colonne. Seulement une fois le titulaire commencé : avant, le
+                // nom peut être décalé sous un libellé posé plus à gauche.
+                let blank = column_is_blank(line, left, right);
+                if offset > 0 && blank && started {
+                    break;
+                }
+                if offset > 0 && !blank {
+                    started = true;
+                }
                 if let Some((content, before, _, _)) = complete(line, left, right) {
                     let should_stop = stop.is_match(&content) || stop.is_match(&before);
 
@@ -67,6 +93,23 @@ impl Patch {
             .filter(|line| !line.is_empty())
             .collect()
     }
+}
+
+/// Libellé de `stop` sur la ligne dont l'étendue chevauche les colonnes du bloc.
+fn label_over_block(line: &str, stop: &Regex, left: usize, right: usize) -> Option<String> {
+    stop.find_iter(line).find_map(|m| {
+        let start = line[..m.start()].chars().count();
+        let end = start + m.as_str().chars().count();
+        (end > left && start <= right).then(|| m.as_str().to_string())
+    })
+}
+
+/// Vrai si la ligne n'a que des blancs entre les colonnes `left` et `right` incluses.
+fn column_is_blank(line: &str, left: usize, right: usize) -> bool {
+    line.chars()
+        .skip(left)
+        .take(right.saturating_sub(left) + 1)
+        .all(char::is_whitespace)
 }
 
 fn complete(line: &str, start: usize, end: usize) -> Option<(String, String, usize, usize)> {
@@ -193,6 +236,26 @@ mod tests {
         let result = vec!["M HENRI", "51 RUE BERNARD ROY, 44100 NANTES"];
 
         assert_eq!(patch.inner_lines, result);
+    }
+
+    /// Titulaire sans adresse à gauche, domiciliation adressée à droite : le bloc
+    /// s'arrête au nom au lieu de glisser dans la colonne de la banque.
+    #[test]
+    fn going_down_the_block_does_not_slide_into_the_next_column() {
+        let stop = Regex::new(r"(?i)(domiciliation|\bIBAN\b)").unwrap();
+        let text = vec![
+            "     Titulaire du compte                    Domiciliation bancaire",
+            " Association des Peintres              Banque Exemple",
+            "                                        3 Avenue Hoche",
+            "                                        75008 Paris",
+        ];
+
+        let patch = Patch::extract(&text, 0, &stop, 5, 23, false, 4);
+
+        assert_eq!(
+            patch.lines(),
+            vec!["Titulaire du compte", "Association des Peintres"]
+        );
     }
 
     #[test]

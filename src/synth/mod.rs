@@ -8,6 +8,7 @@
 
 pub mod data;
 pub mod degrade;
+pub mod derive;
 pub mod layout;
 pub mod package;
 pub mod pdf;

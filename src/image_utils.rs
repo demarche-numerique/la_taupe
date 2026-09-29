@@ -33,7 +33,26 @@ pub fn clean_image(image: &DynamicImage, name: &str) -> DynamicImage {
     crate::timing::measure(crate::timing::preprocess, || clean_image_inner(image, name))
 }
 
+/// Plus grand côté de l'image sur laquelle on estime l'inclinaison. Une photo de
+/// téléphone fait douze mégapixels : Canny, Hough et la suppression d'ombre y coûtaient
+/// jusqu'à trois secondes et demie. Mesuré à 1600, l'angle perdait en précision sur les
+/// photos déjà modestes — deux IBAN de photos inclinées ; au-delà de 2400, il n'y a
+/// que les grandes photos, où se trouve le gain.
+const ANGLE_ESTIMATION_SIDE: u32 = 2400;
+
 fn clean_image_inner(image: &DynamicImage, name: &str) -> DynamicImage {
+    // La seconde passe travaille elle aussi sur l'image plafonnée : rotation et
+    // suppression d'ombre en pleine résolution coûtaient encore plus d'une seconde, et à
+    // 2400 px la capitale d'une photo de téléphone garde une trentaine de pixels.
+    let image = &if image.width().max(image.height()) > ANGLE_ESTIMATION_SIDE {
+        image.resize(
+            ANGLE_ESTIMATION_SIDE,
+            ANGLE_ESTIMATION_SIDE,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        image.clone()
+    };
     let whithout_shadow_image = remove_shadows(image, name);
     let angle = angle(&whithout_shadow_image, name);
 
