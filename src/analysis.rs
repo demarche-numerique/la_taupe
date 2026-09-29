@@ -177,7 +177,11 @@ mod tests {
     /// qu'à l'œil. Sept PDF texte de la campagne de production échouaient ainsi, sans
     /// OCR, en quelques dizaines de millisecondes. La fixture : un RIB fictif en tracés
     /// vectoriels sous une couche de glyphes sans correspondance.
+    ///
+    /// Demande les modèles PP-OCR, absents de la CI :
+    ///     cargo test --release -- --ignored a_text_layer_without_a_rib
     #[test]
+    #[ignore = "demande les modèles PP-OCR (download-models.sh)"]
     fn a_text_layer_without_a_rib_falls_back_to_ocr() {
         let content = std::fs::read("tests/fixtures/rib/text_layer_without_rib.pdf").unwrap();
 
