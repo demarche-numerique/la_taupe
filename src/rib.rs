@@ -679,6 +679,21 @@ mod tests {
         test_file(path, account_holder, IBAN, bic);
     }
 
+    /// Gabarit bilingue « Relevé d'Identité Bancaire / Bank details statement » : le
+    /// titulaire à gauche d'un long texte explicatif, le libellé traduit collé au sien,
+    /// le bloc imprimé trois fois. Relevé en échec sur la campagne de production.
+    #[test]
+    fn rib_caisse_epargne_4() {
+        let path = "tests/fixtures/rib/caisse_epargne_4.txt";
+        let account_holder = Some(vec![
+            "M HENRI DEGAS OU MLLE ROSA MONET",
+            "11 AVENUE DU MARECHAL LECLERC",
+            "33400 TALENCE",
+        ]);
+        let bic = "CEPAFRPP333";
+        test_file(path, account_holder, IBAN, bic);
+    }
+
     #[test]
     fn rib_credit_agricole() {
         let path = "tests/fixtures/rib/credit_agricole.txt";
