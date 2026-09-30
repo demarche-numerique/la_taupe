@@ -1,5 +1,5 @@
 use la_taupe::{
-    analysis::{Analysis, Hint, Type},
+    analysis::{rib_analysis_traced, Analysis, Hint, Type},
     http::server,
     twoddoc::trust_service,
 };
@@ -21,6 +21,8 @@ fn main() {
         println!("        directories, one JSON line per file, with the analysis duration.");
         println!("        --type restricts the analysis, like the hint of the http api;");
         println!("        without it both analyses run.");
+        println!("        --trace (with --type rib) adds what the pipeline did: route, engine,");
+        println!("        candidate holder blocks with their place and outcome; never text.");
         println!("la_taupe to start the server");
         std::process::exit(0);
     }
@@ -52,6 +54,7 @@ fn main() {
 fn analyze_batch(args: &[String]) {
     let mut hint: Option<Hint> = None;
     let mut jobs = 1;
+    let mut trace = false;
     let mut files: Vec<PathBuf> = Vec::new();
 
     let mut iter = args[1..].iter();
@@ -68,6 +71,7 @@ fn analyze_batch(args: &[String]) {
                     std::process::exit(1);
                 }
             },
+            "--trace" => trace = true,
             "--jobs" => match iter.next().and_then(|value| value.parse::<usize>().ok()) {
                 Some(value) => jobs = value.max(1),
                 None => {
@@ -94,6 +98,11 @@ fn analyze_batch(args: &[String]) {
         std::process::exit(1);
     }
 
+    if trace && !matches!(hint, Some(Hint::Type(Type::Rib))) {
+        eprintln!("--trace requires --type rib");
+        std::process::exit(1);
+    }
+
     let jobs = jobs.min(files.len());
 
     std::thread::scope(|scope| {
@@ -103,11 +112,21 @@ fn analyze_batch(args: &[String]) {
             scope.spawn(move || {
                 files.iter().skip(job).step_by(jobs).for_each(|path| {
                     // println! locks stdout for the whole line: no interleaving
-                    println!("{}", analyze_one(path, hint));
+                    println!("{}", analyze_one(path, hint, trace));
                 });
             });
         }
     });
+}
+
+/// A RIB analysis, with the trace of what the pipeline did.
+fn traced(path: &Path) -> Result<(Analysis, la_taupe::provenance::Provenance), String> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown");
+    let content = std::fs::read(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    rib_analysis_traced(content, name)
 }
 
 /// Files of a directory (hidden ones excluded), sorted so two runs list them in the
@@ -139,19 +158,29 @@ fn expand(path: &Path) -> Result<Vec<PathBuf>, String> {
 
 /// One stubborn file must not sink a whole directory run: panics are caught and
 /// reported as an error line, like any other failure.
-fn analyze_one(path: &Path, hint: Option<Hint>) -> String {
+fn analyze_one(path: &Path, hint: Option<Hint>, trace: bool) -> String {
     let file_path = path.display().to_string();
 
     let started = Instant::now();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        Analysis::try_from((path, hint))
+        if trace {
+            traced(path).map(|(analysis, provenance)| (analysis, Some(provenance.to_json())))
+        } else {
+            Analysis::try_from((path, hint)).map(|analysis| (analysis, None))
+        }
     }));
     let duration_ms = started.elapsed().as_millis() as u64;
 
     let line = match outcome {
-        Ok(Ok(analysis)) => {
+        Ok(Ok((analysis, None))) => {
             json!({"file_path": file_path, "duration_ms": duration_ms, "analysis": analysis})
         }
+        Ok(Ok((analysis, Some(trace)))) => json!({
+            "file_path": file_path,
+            "duration_ms": duration_ms,
+            "analysis": analysis,
+            "trace": trace,
+        }),
         Ok(Err(msg)) => json!({"file_path": file_path, "duration_ms": duration_ms, "error": msg}),
         Err(_) => {
             json!({"file_path": file_path, "duration_ms": duration_ms, "error": "analysis panicked"})

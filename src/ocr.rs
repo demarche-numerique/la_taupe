@@ -8,7 +8,7 @@ use crate::{
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
     lines::{extract_anchors, TextLine},
     ppocr::{image_to_string, recognize_anchors},
-    provenance::{AnchorSource, Engine, Provenance, TextStats},
+    provenance::{AnchorSource, BlockOutcome, Engine, HolderBlock, Provenance, TextStats},
     rib::{extract_fr_bic, extract_iban, join_cell_letters, Rib},
     shapes::{Anchor, Point},
     tesseract::{img_to_string_using_tesseract, tess_analyze},
@@ -57,17 +57,19 @@ pub fn zoom_and_extract(
     // recadrages autour d'ancres hautes de trois cents pixels — tomberait à côté. On la
     // mène sur la page redressée.
     let turned;
-    let (img, page_text, text_lines, maybe_anchors) =
+    // `turn` : l'image lue est la page tournée de tant de degrés, sens horaire — pour
+    // ramener à la page la place des blocs candidats au titulaire
+    let (img, page_text, text_lines, maybe_anchors, turn) =
         if extract_iban(&page_text).is_none() && mostly_vertical(&text_lines) {
             match turn_upright(img, &iban_regex) {
-                Some((image, text, lines, anchors)) => {
+                Some((image, text, lines, anchors, turn)) => {
                     turned = image;
-                    (&turned, text, lines, anchors)
+                    (&turned, text, lines, anchors, turn)
                 }
-                None => (img, page_text, text_lines, maybe_anchors),
+                None => (img, page_text, text_lines, maybe_anchors, 0),
             }
         } else {
-            (img, page_text, text_lines, maybe_anchors)
+            (img, page_text, text_lines, maybe_anchors, 0)
         };
     let maybe_anchor = maybe_anchors.first();
 
@@ -95,10 +97,18 @@ pub fn zoom_and_extract(
         provenance.engine = Some(Engine::PpOcrPage);
 
         let bic = extract_bic(img, &page_text, &text_lines, &iban, name);
-        let (holder_img, holder_lines) = upright(img, &text_lines, &iban, &iban_regex)
-            .unwrap_or_else(|| (img.clone(), text_lines));
-        let account_holder =
-            zoom_and_extract_account_holder_traced(&holder_img, holder_lines, name, provenance);
+        let (holder_img, holder_lines, holder_turn) =
+            match upright(img, &text_lines, &iban, &iban_regex) {
+                Some((image, lines, extra)) => (image, lines, (turn + extra) % 360),
+                None => (img.clone(), text_lines, turn),
+            };
+        let account_holder = zoom_and_extract_account_holder_traced(
+            &holder_img,
+            holder_lines,
+            name,
+            provenance,
+            Some(holder_turn),
+        );
 
         return Some(Rib::from_iban(iban, account_holder, bic));
     };
@@ -112,8 +122,13 @@ pub fn zoom_and_extract(
             provenance.engine = Some(Engine::PpOcrCrop);
 
             let bic = extract_bic(img, &page_text, &text_lines, &iban, name);
-            let account_holder =
-                zoom_and_extract_account_holder_traced(img, text_lines.clone(), name, provenance);
+            let account_holder = zoom_and_extract_account_holder_traced(
+                img,
+                text_lines.clone(),
+                name,
+                provenance,
+                Some(turn),
+            );
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -125,8 +140,13 @@ pub fn zoom_and_extract(
             provenance.engine = Some(Engine::PpOcrNarrowCrop);
 
             let bic = extract_bic(img, &page_text, &text_lines, &iban, name);
-            let account_holder =
-                zoom_and_extract_account_holder_traced(img, text_lines, name, provenance);
+            let account_holder = zoom_and_extract_account_holder_traced(
+                img,
+                text_lines,
+                name,
+                provenance,
+                Some(turn),
+            );
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -185,8 +205,15 @@ pub fn zoom_and_extract(
 
             let (page_text, text_lines, _) = recognize_anchors(&img, &iban_regex, None);
             let bic = extract_bic(&img, &page_text, &text_lines, &iban, name);
-            let account_holder =
-                zoom_and_extract_account_holder_traced(&img, text_lines, name, provenance);
+            // un angle quelconque ne se ramène pas à la page par un quart de tour
+            let holder_turn = maybe_angle.is_none_or(|a| a.abs() < 0.02).then_some(turn);
+            let account_holder = zoom_and_extract_account_holder_traced(
+                &img,
+                text_lines,
+                name,
+                provenance,
+                holder_turn,
+            );
 
             return Some(Rib::from_iban(iban, account_holder, bic));
         }
@@ -268,37 +295,38 @@ fn upright(
     text_lines: &[TextLine],
     iban: &str,
     iban_regex: &Regex,
-) -> Option<(DynamicImage, Vec<TextLine>)> {
+) -> Option<(DynamicImage, Vec<TextLine>, u16)> {
     if !mostly_vertical(text_lines) {
         return None;
     }
 
-    [img.rotate90(), img.rotate270()]
+    [(img.rotate90(), 90), (img.rotate270(), 270)]
         .into_iter()
-        .find_map(|rotated| {
+        .find_map(|(rotated, turn)| {
             let (text, lines, _) = recognize_anchors(&rotated, iban_regex, None);
             let same_iban = extract_iban(&text).as_deref() == Some(iban);
 
-            (same_iban && !mostly_vertical(&lines)).then_some((rotated, lines))
+            (same_iban && !mostly_vertical(&lines)).then_some((rotated, lines, turn))
         })
 }
+
+/// Page tournée d'un quart de tour : l'image, sa lecture, ses lignes, ses ancres d'IBAN
+/// et l'angle du quart de tour, sens horaire.
+type TurnedPage = (DynamicImage, String, Vec<TextLine>, Vec<Anchor>, u16);
 
 /// Relit une page pivotée d'un quart de tour dans les deux sens, et garde la lecture la
 /// plus probante : celle qui donne un IBAN, sinon celle qui porte le plus d'ancres
 /// d'IBAN, puis le plus de vocabulaire de RIB, puis de caractères — le sens tête en bas
 /// lit du bruit.
-fn turn_upright(
-    img: &DynamicImage,
-    iban_regex: &Regex,
-) -> Option<(DynamicImage, String, Vec<TextLine>, Vec<Anchor>)> {
-    [img.rotate90(), img.rotate270()]
+fn turn_upright(img: &DynamicImage, iban_regex: &Regex) -> Option<TurnedPage> {
+    [(img.rotate90(), 90), (img.rotate270(), 270)]
         .into_iter()
-        .map(|rotated| {
+        .map(|(rotated, turn)| {
             let (text, lines, anchors) = recognize_anchors(&rotated, iban_regex, None);
-            (rotated, text, lines, anchors)
+            (rotated, text, lines, anchors, turn)
         })
-        .filter(|(_, _, lines, _)| !mostly_vertical(lines))
-        .max_by_key(|(_, text, _, anchors)| {
+        .filter(|(_, _, lines, _, _)| !mostly_vertical(lines))
+        .max_by_key(|(_, text, _, anchors, _)| {
             let stats = TextStats::of(text);
             (
                 extract_iban(text).is_some(),
@@ -506,12 +534,41 @@ fn text_in_mask(text_lines: &[TextLine], (x, y, w, h): (u32, u32, u32, u32)) -> 
         .join("\n")
 }
 
+/// Rectangle d'un recadrage en fractions de la page d'origine, l'image lue étant cette
+/// page tournée de `turn` degrés dans le sens horaire ; `None` si ce n'est pas un quart
+/// de tour. Le redressement d'une faible inclinaison, lui, est négligé : quelques pixels.
+fn page_rect(
+    img: &DynamicImage,
+    (x, y, w, h): (u32, u32, u32, u32),
+    turn: Option<u16>,
+) -> Option<[f32; 4]> {
+    let (width, height) = (img.width().max(1) as f32, img.height().max(1) as f32);
+    let (x0, y0) = ((x as f32 / width).min(1.0), (y as f32 / height).min(1.0));
+    let x1 = ((x + w) as f32 / width).min(1.0);
+    let y1 = ((y + h) as f32 / height).min(1.0);
+    let back = |fx: f32, fy: f32| match turn {
+        Some(90) => Some((fy, 1.0 - fx)),
+        Some(180) => Some((1.0 - fx, 1.0 - fy)),
+        Some(270) => Some((1.0 - fy, fx)),
+        Some(0) => Some((fx, fy)),
+        _ => None,
+    };
+    let (a, b) = (back(x0, y0)?, back(x1, y1)?);
+    Some([a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)])
+}
+
 fn zoom_and_extract_account_holder_traced(
     img: &DynamicImage,
     text_lines: Vec<TextLine>,
     name: &str,
     provenance: &mut Provenance,
+    turn: Option<u16>,
 ) -> Option<String> {
+    provenance.holder_blocks.clear();
+    let block = |mask: (u32, u32, u32, u32), outcome: BlockOutcome| HolderBlock {
+        rect: page_rect(img, mask, turn),
+        outcome,
+    };
     // Le code postal peut être collé à la ville — « 44800ST HERBLAIN » — selon le
     // moteur et l'image ; l'espace n'est pas garanti. Le chemin texte le tolère déjà,
     // le chemin image l'exigeait, et perdait alors toute ancre de titulaire.
@@ -553,7 +610,7 @@ fn zoom_and_extract_account_holder_traced(
     provenance.postal_anchors = postal_anchors.len() as u32;
     let page_lines: Vec<String> = text_lines.iter().map(|l| l.to_string()).collect();
 
-    let mut ranked: Vec<(usize, &Anchor, i32)> = postal_anchors
+    let scored: Vec<(usize, &Anchor, i32)> = postal_anchors
         .iter()
         .enumerate()
         .map(|(index, anchor)| {
@@ -569,34 +626,44 @@ fn zoom_and_extract_account_holder_traced(
             };
             (index, anchor, score)
         })
+        .collect();
+    for (_, anchor, score) in &scored {
+        if *score < 0 {
+            let skipped = block(anchor.addr_mask(), BlockOutcome::SkippedAsDomiciliation);
+            provenance.holder_blocks.push(skipped);
+        }
+    }
+    let mut ranked: Vec<(usize, &Anchor, i32)> = scored
+        .into_iter()
         .filter(|(_, _, score)| *score >= 0)
         .collect();
     ranked.sort_by_key(|(_, _, score)| -*score);
     provenance.holder_candidates = ranked.len() as u32;
 
-    let mut account_holders: Vec<String> = Vec::new();
+    // chaque titulaire recevable, avec l'indice de son bloc dans la trace
+    let mut account_holders: Vec<(String, usize)> = Vec::new();
     for (index, anchor, score) in ranked {
         provenance.holder_blocks_read += 1;
-        let text = read_mask(index, anchor.addr_mask(), "addr_mask");
+        let addr_mask = anchor.addr_mask();
+        let text = read_mask(index, addr_mask, "addr_mask");
         // un bloc qui se présente comme domiciliation ne devient pas titulaire, même
         // en le recadrant autrement
         if domiciliation.is_match(&text) && !holder_label.is_match(&text) {
+            let rejected = block(addr_mask, BlockOutcome::Domiciliation);
+            provenance.holder_blocks.push(rejected);
             continue;
         }
         // Un bloc porteur du libellé de titulaire est désigné par le document même sans
         // civilité — le cas de toute personne morale ; `trim_holder` sait s'y ancrer.
-        let text = if match_civilite(&text) || holder_label.is_match(&text) {
-            Some(text)
+        let (text, mask, refusal) = if match_civilite(&text) || holder_label.is_match(&text) {
+            (Some(text), addr_mask, BlockOutcome::Trimmed)
         } else {
-            let new_text = read_mask(
-                index,
-                anchor.right_align_addr_mask(),
-                "right_align_addr_mask",
-            );
+            let right_mask = anchor.right_align_addr_mask();
+            let new_text = read_mask(index, right_mask, "right_align_addr_mask");
             if (match_civilite(&new_text) || holder_label.is_match(&new_text))
                 && !domiciliation.is_match(&new_text)
             {
-                Some(new_text)
+                (Some(new_text), right_mask, BlockOutcome::Trimmed)
             } else if let Some(label) = side_label(&text_lines, anchor, &holder_label) {
                 // Libellé à gauche, titulaire aligné à droite sur les mêmes lignes : le
                 // libellé sort des deux recadrages, et rien d'autre ne désigne le bloc
@@ -604,34 +671,48 @@ fn zoom_and_extract_account_holder_traced(
                 // première ligne : on recadre de sa hauteur jusqu'au code postal, ce
                 // qui laisse dehors la date et le numéro d'agence posés au-dessus, et
                 // on lit ce recadrage comme étiqueté.
-                let side = read_mask(index, side_mask(anchor, label), "side_label_mask");
-                (!domiciliation.is_match(&side)).then(|| format!("Titulaire\n{}", side))
+                let mask = side_mask(anchor, label);
+                let side = read_mask(index, mask, "side_label_mask");
+                if domiciliation.is_match(&side) {
+                    (None, mask, BlockOutcome::Domiciliation)
+                } else {
+                    (
+                        Some(format!("Titulaire\n{}", side)),
+                        mask,
+                        BlockOutcome::Trimmed,
+                    )
+                }
             } else {
-                None
+                (None, addr_mask, BlockOutcome::NotDesignated)
             }
         };
-        if let Some(holder) = text
+        match text
             .and_then(|t| trim_holder(&t, &code_postal_line_regex))
             .map(|h| complete_cut_words(&h, &page_lines))
         {
-            let labelled = holder_label.is_match(&holder);
-            account_holders.push(holder);
-            // le premier bloc porteur d'un libellé — ou le premier tout court quand la
-            // page n'en désigne aucun — suffit : inutile de reconnaître les suivants
-            if labelled || score >= 1 {
-                break;
+            Some(holder) => {
+                let labelled = holder_label.is_match(&holder);
+                account_holders.push((holder, provenance.holder_blocks.len()));
+                provenance
+                    .holder_blocks
+                    .push(block(mask, BlockOutcome::Outranked));
+                // le premier bloc porteur d'un libellé — ou le premier tout court quand la
+                // page n'en désigne aucun — suffit : inutile de reconnaître les suivants
+                if labelled || score >= 1 {
+                    break;
+                }
             }
+            None => provenance.holder_blocks.push(block(mask, refusal)),
         }
     }
     // à plusieurs candidats, celui qui porte un libellé de titulaire l'emporte
-    account_holders.sort_by_key(|text| !holder_label.is_match(text));
+    account_holders.sort_by_key(|(text, _)| !holder_label.is_match(text));
 
     // `s` porte déjà ses sauts de ligne : les recollecter caractère à caractère
     // aplatirait le titulaire en une seule ligne
-    let account_holder = account_holders.first().cloned();
-
-    if account_holder.is_some() {
-        return account_holder;
+    if let Some((holder, kept)) = account_holders.into_iter().next() {
+        provenance.holder_blocks[kept].outcome = BlockOutcome::Kept;
+        return Some(holder);
     }
 
     // Le mot « titulaire » se cherche dans les lignes déjà reconnues : relancer la
@@ -641,20 +722,30 @@ fn zoom_and_extract_account_holder_traced(
     let account_holder_word_regex = Regex::new(r"(?i)titulaire").unwrap();
     let account_holder_anchors = extract_anchors(text_lines, &account_holder_word_regex, None);
 
-    account_holder_anchors
-        .iter()
-        .enumerate()
-        .map(|(index, anchor)| {
-            let cropped_img = crop(
-                img,
-                anchor.account_holder_mask(),
-                name,
-                &format!(r#"{}_account_holder_mask"#, index),
-            );
-            image_to_string(cropped_img)
-        })
-        .filter(|text| account_holder_word_regex.is_match(text))
-        .find_map(|text| find_simple_account_holder(&text, 1))
+    for (index, anchor) in account_holder_anchors.iter().enumerate() {
+        let mask = anchor.account_holder_mask();
+        let cropped_img = crop(
+            img,
+            mask,
+            name,
+            &format!(r#"{}_account_holder_mask"#, index),
+        );
+        let text = image_to_string(cropped_img);
+        let holder = account_holder_word_regex
+            .is_match(&text)
+            .then(|| find_simple_account_holder(&text, 1))
+            .flatten();
+        let outcome = if holder.is_some() {
+            BlockOutcome::Kept
+        } else {
+            BlockOutcome::NotDesignated
+        };
+        provenance.holder_blocks.push(block(mask, outcome));
+        if holder.is_some() {
+            return holder;
+        }
+    }
+    None
 }
 
 /// Restreint un bloc reconnu au titulaire : on écarte ce qui précède la civilité — ou le

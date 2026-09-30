@@ -42,6 +42,59 @@ pub enum Engine {
     TessCrop,
 }
 
+/// Sort d'un bloc candidat au titulaire, sur le chemin image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockOutcome {
+    /// Écarté sur la lecture pleine page, sans recadrage : son voisinage se présente
+    /// comme une domiciliation.
+    SkippedAsDomiciliation,
+    /// Recadré, puis écarté : c'est une domiciliation.
+    Domiciliation,
+    /// Recadré, mais ni civilité, ni forme juridique, ni libellé ne le désignent.
+    NotDesignated,
+    /// Désigné, mais rien n'a tenu une fois borné au code postal : bloc douteux.
+    Trimmed,
+    /// Recevable, mais un autre bloc l'a emporté.
+    Outranked,
+    /// Rendu comme titulaire.
+    Kept,
+}
+
+impl BlockOutcome {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BlockOutcome::SkippedAsDomiciliation => "écarté avant lecture (domiciliation)",
+            BlockOutcome::Domiciliation => "relu, écarté (domiciliation)",
+            BlockOutcome::NotDesignated => "relu, écarté (ni civilité ni libellé)",
+            BlockOutcome::Trimmed => "relu, écarté (douteux une fois borné)",
+            BlockOutcome::Outranked => "relu, supplanté par un autre bloc",
+            BlockOutcome::Kept => "retenu",
+        }
+    }
+
+    /// Code stable, pour la trace JSON.
+    pub fn code(&self) -> &'static str {
+        match self {
+            BlockOutcome::SkippedAsDomiciliation => "skipped_as_domiciliation",
+            BlockOutcome::Domiciliation => "domiciliation",
+            BlockOutcome::NotDesignated => "not_designated",
+            BlockOutcome::Trimmed => "trimmed",
+            BlockOutcome::Outranked => "outranked",
+            BlockOutcome::Kept => "kept",
+        }
+    }
+}
+
+/// Bloc candidat au titulaire : sa place et ce qu'il est devenu. La place est en
+/// fractions de la page d'origine — x0, y0, x1, y1 —, pour se comparer à un rectangle
+/// annoté ; elle manque quand l'image lue ne se ramène pas à la page par un quart de tour
+/// (redressement d'un angle quelconque par tesseract). Aucun texte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HolderBlock {
+    pub rect: Option<[f32; 4]>,
+    pub outcome: BlockOutcome,
+}
+
 impl Route {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -119,6 +172,10 @@ pub struct Provenance {
     pub postal_anchors: u32,
     pub holder_candidates: u32,
     pub holder_blocks_read: u32,
+    /// Les blocs candidats au titulaire, avec leur place et leur sort (chemin image).
+    pub holder_blocks: Vec<HolderBlock>,
+    /// Page du PDF rastérisée pour l'OCR (1 pour une image).
+    pub page: Option<u32>,
 }
 
 impl TextStats {
@@ -230,6 +287,34 @@ impl Provenance {
             ..Default::default()
         }
     }
+
+    /// La trace en JSON, pour `la_taupe --trace` : des étiquettes, des comptes et des
+    /// rectangles, jamais de texte — elle peut accompagner un résultat sans rien
+    /// divulguer de plus que lui.
+    pub fn to_json(&self) -> serde_json::Value {
+        let blocks: Vec<serde_json::Value> = self
+            .holder_blocks
+            .iter()
+            .map(|b| {
+                // quatre décimales : un dixième de millimètre sur une page A4
+                let rect = b
+                    .rect
+                    .map(|r| r.map(|v| (f64::from(v) * 1e4).round() / 1e4));
+                serde_json::json!({ "rect": rect, "outcome": b.outcome.code() })
+            })
+            .collect();
+
+        serde_json::json!({
+            "route": self.route.map(|r| r.as_str()),
+            "engine": self.engine.map(|e| e.as_str()),
+            "page": self.page,
+            "second_pass": self.second_pass,
+            "postal_anchors": self.postal_anchors,
+            "holder_candidates": self.holder_candidates,
+            "holder_blocks_read": self.holder_blocks_read,
+            "holder_blocks": blocks,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -245,5 +330,33 @@ mod tests {
         );
         // peu de texte mais un préfixe d'IBAN : on a peut-être juste mal lu
         assert!(!TextStats::of("FR76 3000").is_unreadable());
+    }
+
+    /// La trace JSON ne porte que des étiquettes, des comptes et des rectangles.
+    #[test]
+    fn the_json_trace_carries_places_and_outcomes() {
+        let provenance = Provenance {
+            route: Some(Route::Image),
+            page: Some(1),
+            holder_blocks_read: 1,
+            holder_blocks: vec![
+                HolderBlock {
+                    rect: Some([0.1, 0.2, 0.300_04, 0.4]),
+                    outcome: BlockOutcome::Kept,
+                },
+                HolderBlock {
+                    rect: None,
+                    outcome: BlockOutcome::NotDesignated,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let json = provenance.to_json();
+        assert_eq!(json["route"], "image");
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["holder_blocks"][0]["outcome"], "kept");
+        assert_eq!(json["holder_blocks"][0]["rect"][2], 0.3);
+        assert!(json["holder_blocks"][1]["rect"].is_null());
     }
 }
