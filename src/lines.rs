@@ -144,26 +144,33 @@ pub fn lines_to_text(text_lines: &[TextLine]) -> String {
         .join("\n")
 }
 
-pub fn extract_anchors(
-    text_lines: Vec<TextLine>,
-    word_regex: &Regex,
-    line_regex: Option<&Regex>,
-) -> Vec<Anchor> {
-    // Une ancre est un mot sur une ligne de texte. Le détecteur fusionne parfois une
-    // colonne entière en une seule « ligne » : l'ancre y fait dix à vingt fois la
-    // hauteur d'une ligne, et tous les masques, multiples de cette hauteur, deviennent
-    // démesurés et tombent à côté. Une ancre plus de trois fois plus haute que la ligne
-    // médiane de la page n'est pas une ligne de texte : on l'écarte, la suivante prendra.
+/// Hauteur au-delà de laquelle une « ligne » n'en est pas une : trois fois la ligne
+/// médiane de la page.
+///
+/// Le détecteur fusionne parfois une colonne entière en une seule « ligne » : une ancre
+/// y ferait dix à vingt fois la hauteur d'une ligne, et tous les masques, multiples de
+/// cette hauteur, deviendraient démesurés et tomberaient à côté.
+pub fn max_line_height(text_lines: &[TextLine]) -> i32 {
     let mut heights: Vec<i32> = text_lines
         .iter()
         .map(|l| l.bounding_rect().height())
         .filter(|h| *h > 0)
         .collect();
     heights.sort_unstable();
-    let max_height = heights
+    heights
         .get(heights.len() / 2)
         .map(|median| median * 3)
-        .unwrap_or(i32::MAX);
+        .unwrap_or(i32::MAX)
+}
+
+pub fn extract_anchors(
+    text_lines: Vec<TextLine>,
+    word_regex: &Regex,
+    line_regex: Option<&Regex>,
+) -> Vec<Anchor> {
+    // Une ancre est un mot sur une ligne de texte ; une ligne trop haute n'en est pas
+    // une : on l'écarte, la suivante prendra.
+    let max_height = max_line_height(&text_lines);
 
     text_lines
         .iter()

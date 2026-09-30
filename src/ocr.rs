@@ -6,9 +6,9 @@ use regex::Regex;
 
 use crate::{
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
-    lines::{extract_anchors, TextLine},
+    lines::{extract_anchors, max_line_height, TextLine},
     ppocr::{image_to_string, recognize_anchors},
-    provenance::{AnchorSource, BlockOutcome, Engine, HolderBlock, Provenance, TextStats},
+    provenance::{AnchorSource, BlockOutcome, Engine, HolderBlock, OcrLine, Provenance, TextStats},
     rib::{extract_fr_bic, extract_iban, join_cell_letters, Rib},
     shapes::{Anchor, Point},
     tesseract::{img_to_string_using_tesseract, tess_analyze},
@@ -574,6 +574,30 @@ fn zoom_and_extract_account_holder_traced(
     // le chemin image l'exigeait, et perdait alors toute ancre de titulaire.
     let code_postal_line_regex = Regex::new(r"[[:space:]]*\d{5}\s*[[:alpha:]]").unwrap();
     let code_postal_word_regex = Regex::new(r"^\d{5}").unwrap();
+
+    // la géométrie des lignes lues, pour la trace : une ligne de code postal écartée
+    // pour sa hauteur explique un titulaire qu'aucun bloc n'a jamais couvert
+    let max_height = max_line_height(&text_lines);
+    provenance.ocr_lines = text_lines
+        .iter()
+        .map(|line| {
+            let r = line.bounding_rect();
+            let mask = (
+                r.left().max(0) as u32,
+                r.top().max(0) as u32,
+                r.width().max(0) as u32,
+                r.height().max(0) as u32,
+            );
+            OcrLine {
+                rect: page_rect(img, mask, turn),
+                postal: code_postal_line_regex.is_match(&line.to_string())
+                    && line
+                        .words()
+                        .any(|w| code_postal_word_regex.is_match(&w.to_string())),
+                oversized: r.height() > max_height,
+            }
+        })
+        .collect();
 
     let postal_anchors = extract_anchors(
         text_lines.clone(),

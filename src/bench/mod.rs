@@ -125,6 +125,7 @@ fn measure_unguarded(
                 truth.holder_page.unwrap_or(1),
                 provenance.page,
                 &provenance.holder_blocks,
+                &provenance.ocr_lines,
             ));
         }
     }

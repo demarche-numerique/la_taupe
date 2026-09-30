@@ -95,6 +95,17 @@ pub struct HolderBlock {
     pub outcome: BlockOutcome,
 }
 
+/// Ligne lue par l'OCR sur la page où le titulaire est cherché : sa place (fractions de
+/// la page d'origine, comme les blocs), si elle a la forme d'une ligne de code postal, et
+/// si elle est écartée des ancres pour sa hauteur — le détecteur a fusionné plusieurs
+/// lignes. Aucun texte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OcrLine {
+    pub rect: Option<[f32; 4]>,
+    pub postal: bool,
+    pub oversized: bool,
+}
+
 impl Route {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -174,6 +185,8 @@ pub struct Provenance {
     pub holder_blocks_read: u32,
     /// Les blocs candidats au titulaire, avec leur place et leur sort (chemin image).
     pub holder_blocks: Vec<HolderBlock>,
+    /// Les lignes lues sur la page où le titulaire est cherché (chemin image).
+    pub ocr_lines: Vec<OcrLine>,
     /// Page du PDF rastérisée pour l'OCR (1 pour une image).
     pub page: Option<u32>,
 }
@@ -304,6 +317,17 @@ impl Provenance {
             })
             .collect();
 
+        let lines: Vec<serde_json::Value> = self
+            .ocr_lines
+            .iter()
+            .map(|l| {
+                let rect = l
+                    .rect
+                    .map(|r| r.map(|v| (f64::from(v) * 1e4).round() / 1e4));
+                serde_json::json!({ "rect": rect, "postal": l.postal, "oversized": l.oversized })
+            })
+            .collect();
+
         serde_json::json!({
             "route": self.route.map(|r| r.as_str()),
             "engine": self.engine.map(|e| e.as_str()),
@@ -313,6 +337,7 @@ impl Provenance {
             "holder_candidates": self.holder_candidates,
             "holder_blocks_read": self.holder_blocks_read,
             "holder_blocks": blocks,
+            "ocr_lines": lines,
         })
     }
 }

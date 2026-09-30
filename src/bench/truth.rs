@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::provenance::{BlockOutcome, HolderBlock};
+use crate::provenance::{BlockOutcome, HolderBlock, OcrLine};
 use crate::rib::normalize_iban;
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -35,7 +35,13 @@ pub enum BlockDiagnosis {
     Kept,
     /// Il a été vu, puis écarté ou supplanté.
     Rejected(BlockOutcome),
-    /// Aucun bloc candidat ne le couvre.
+    /// Aucun bloc ne le couvre, parce que ses lignes ont été lues comme une seule,
+    /// trop haute, écartée des ancres avec son code postal.
+    MergedLines,
+    /// Aucun bloc ne le couvre, et aucune de ses lignes n'a la forme d'un code postal :
+    /// il n'y en a pas, ou il a été mal lu.
+    PostalNotRead,
+    /// Aucun bloc candidat ne le couvre, pour une autre raison.
     Missed,
     /// Comparaison impossible : chemin texte, autre page, place inconnue.
     NotComparable,
@@ -46,6 +52,10 @@ impl BlockDiagnosis {
         match self {
             BlockDiagnosis::Kept => "bon bloc retenu (bornage ou lecture)".to_string(),
             BlockDiagnosis::Rejected(outcome) => format!("bon bloc {}", outcome.as_str()),
+            BlockDiagnosis::MergedLines => {
+                "titulaire dans une ligne OCR trop haute (écartée)".to_string()
+            }
+            BlockDiagnosis::PostalNotRead => "aucun code postal lu dans le titulaire".to_string(),
             BlockDiagnosis::Missed => "aucun bloc candidat sur le titulaire".to_string(),
             BlockDiagnosis::NotComparable => "non comparable".to_string(),
         }
@@ -71,6 +81,7 @@ pub fn diagnose_blocks(
     truth_page: u32,
     page: Option<u32>,
     blocks: &[HolderBlock],
+    lines: &[OcrLine],
 ) -> BlockDiagnosis {
     if page != Some(truth_page) {
         return BlockDiagnosis::NotComparable;
@@ -86,11 +97,28 @@ pub fn diagnose_blocks(
     if good.iter().any(|(_, o)| *o == BlockOutcome::Kept) {
         return BlockDiagnosis::Kept;
     }
-    good.iter()
-        .max_by(|a, b| a.0.total_cmp(&b.0))
-        .map_or(BlockDiagnosis::Missed, |(_, o)| {
-            BlockDiagnosis::Rejected(*o)
-        })
+    if let Some((_, outcome)) = good.iter().max_by(|a, b| a.0.total_cmp(&b.0)) {
+        return BlockDiagnosis::Rejected(*outcome);
+    }
+
+    // aucun bloc sur le titulaire : les lignes lues disent pourquoi
+    let centred = |r: [f32; 4]| {
+        let (cx, cy) = ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+        cx >= truth_box[0] && cx <= truth_box[2] && cy >= truth_box[1] && cy <= truth_box[3]
+    };
+    let merged = lines
+        .iter()
+        .any(|l| l.oversized && l.rect.is_some_and(|r| coverage(r, truth_box) >= 0.5));
+    let postal = lines
+        .iter()
+        .any(|l| l.postal && l.rect.is_some_and(centred));
+    if merged {
+        BlockDiagnosis::MergedLines
+    } else if !lines.is_empty() && !postal {
+        BlockDiagnosis::PostalNotRead
+    } else {
+        BlockDiagnosis::Missed
+    }
 }
 
 /// Nature d'un écart sur le titulaire, sans son contenu.
@@ -633,26 +661,57 @@ mod tests {
         let holder = at([0.45, 0.15, 0.85, 0.32], BlockOutcome::NotDesignated);
 
         assert_eq!(
-            diagnose_blocks(truth, 1, Some(1), &[agency.clone(), holder.clone()]),
+            diagnose_blocks(truth, 1, Some(1), &[agency.clone(), holder.clone()], &[]),
             BlockDiagnosis::Rejected(BlockOutcome::NotDesignated)
         );
         assert_eq!(
-            diagnose_blocks(truth, 1, Some(1), std::slice::from_ref(&agency)),
+            diagnose_blocks(truth, 1, Some(1), std::slice::from_ref(&agency), &[]),
             BlockDiagnosis::Missed
         );
         let kept = at([0.5, 0.2, 0.7, 0.3], BlockOutcome::Kept);
         assert_eq!(
-            diagnose_blocks(truth, 1, Some(1), &[kept]),
+            diagnose_blocks(truth, 1, Some(1), &[kept], &[]),
             BlockDiagnosis::Kept
         );
         // une autre page, ou le chemin texte (pas de page rastérisée) : rien à comparer
         assert_eq!(
-            diagnose_blocks(truth, 2, Some(1), std::slice::from_ref(&holder)),
+            diagnose_blocks(truth, 2, Some(1), std::slice::from_ref(&holder), &[]),
             BlockDiagnosis::NotComparable
         );
         assert_eq!(
-            diagnose_blocks(truth, 1, None, &[]),
+            diagnose_blocks(truth, 1, None, &[], &[]),
             BlockDiagnosis::NotComparable
+        );
+    }
+
+    /// Sans bloc sur le titulaire, les lignes lues disent pourquoi : ses lignes lues
+    /// comme une seule, trop haute ; ou pas de code postal parmi elles.
+    #[test]
+    fn the_read_lines_say_why_no_block_covers_the_holder() {
+        let truth = [0.5, 0.2, 0.8, 0.3];
+        let line = |rect: [f32; 4], postal, oversized| OcrLine {
+            rect: Some(rect),
+            postal,
+            oversized,
+        };
+
+        let merged = line([0.5, 0.19, 0.8, 0.31], true, true);
+        assert_eq!(
+            diagnose_blocks(truth, 1, Some(1), &[], &[merged]),
+            BlockDiagnosis::MergedLines
+        );
+
+        let name = line([0.5, 0.2, 0.7, 0.23], false, false);
+        let street = line([0.5, 0.24, 0.7, 0.27], false, false);
+        assert_eq!(
+            diagnose_blocks(truth, 1, Some(1), &[], &[name.clone(), street.clone()]),
+            BlockDiagnosis::PostalNotRead
+        );
+
+        let postal = line([0.5, 0.27, 0.7, 0.3], true, false);
+        assert_eq!(
+            diagnose_blocks(truth, 1, Some(1), &[], &[name, street, postal]),
+            BlockDiagnosis::Missed
         );
     }
 
