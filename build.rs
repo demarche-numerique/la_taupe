@@ -34,7 +34,10 @@ fn watch_inputs() {
     println!("cargo:rerun-if-changed=download-models.sh");
     println!("cargo:rerun-if-changed=models");
 
-    let Ok(output) = Command::new("git").args(["rev-parse", "--git-dir"]).output() else {
+    let Ok(output) = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
+    else {
         return;
     };
     let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
