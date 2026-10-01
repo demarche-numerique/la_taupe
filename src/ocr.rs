@@ -744,7 +744,8 @@ fn zoom_and_extract_account_holder_traced(
     // « bénéficiaire » n'entre pas dans ce repli : mesuré, le masque à compte de lignes
     // fixe rend des blocs tronqués sur ces mises en page — pire que rien
     let account_holder_word_regex = Regex::new(r"(?i)titulaire").unwrap();
-    let account_holder_anchors = extract_anchors(text_lines, &account_holder_word_regex, None);
+    let account_holder_anchors =
+        extract_anchors(text_lines.clone(), &account_holder_word_regex, None);
 
     for (index, anchor) in account_holder_anchors.iter().enumerate() {
         let mask = anchor.account_holder_mask();
@@ -769,7 +770,39 @@ fn zoom_and_extract_account_holder_traced(
             return holder;
         }
     }
-    None
+
+    // Dernier recours : ni code postal ni libellé autour du titulaire — le RIB n'imprime
+    // que le nom, sans adresse (« M OU MME DUPONT JEAN » sous le BIC). Aucune ancre ne
+    // le désignait. La ligne de la page qui commence par une civilité est le titulaire ;
+    // le chemin texte a le même recours.
+    let line = civility_line(&text_lines)?;
+    let r = line.bounding_rect();
+    let mask = (
+        r.left().max(0) as u32,
+        r.top().max(0) as u32,
+        r.width().max(0) as u32,
+        r.height().max(0) as u32,
+    );
+    provenance
+        .holder_blocks
+        .push(block(mask, BlockOutcome::Kept));
+    Some(line.to_string().trim().to_string())
+}
+
+/// Première ligne de la page, de haut en bas, qui commence par une civilité suivie d'un
+/// nom : « M DUPONT », « MME DUPONT », « M OU MME DUPONT », « M.OU MME DUPONT ». Un mot
+/// qui commence comme une civilité (« MONTANT », « Mode de paiement ») n'en est pas une.
+fn civility_line(text_lines: &[TextLine]) -> Option<&TextLine> {
+    let civility = Regex::new(
+        r"(?i)^\s*(m|mr|monsieur|mme|madame|mlle|mle|melle|mademoiselle)(\.\s*|\s+)(ou\s+(m|mr|mme|madame|monsieur)\.?\s+)?[[:alpha:]]{2,}",
+    )
+    .unwrap();
+
+    let mut lines: Vec<&TextLine> = text_lines.iter().collect();
+    lines.sort_by_key(|l| l.bounding_rect().top());
+    lines
+        .into_iter()
+        .find(|l| civility.is_match(&l.to_string()))
 }
 
 /// Restreint un bloc reconnu au titulaire : on écarte ce qui précède la civilité — ou le
@@ -1128,6 +1161,33 @@ mod tests {
         assert!(!is_label_or_noise("BP 10001"));
         assert!(!is_label_or_noise("ASS FAUVE (EX NABIS)"));
         assert!(!is_label_or_noise("ART 'NEUF' DECO 'BIS"));
+    }
+
+    /// Un RIB qui n'imprime que le nom, sans adresse : la ligne qui commence par une
+    /// civilité est le titulaire, la première de haut en bas.
+    #[test]
+    fn a_holder_printed_without_address_is_found_by_its_civility() {
+        let lines = vec![
+            line("Mode de paiement : virement", 100, 100, 20, 500),
+            line("FR76 3000 1000 6449 1900 9562 088", 200, 100, 20, 700),
+            line("BIC : BDFEFRPPCCT", 240, 100, 20, 300),
+            line("M OU MME MONET CLAUDE", 280, 100, 20, 450),
+            line("MME KAHLO FRIDA", 400, 100, 20, 300),
+        ];
+        assert_eq!(
+            civility_line(&lines).map(|l| l.to_string()).as_deref(),
+            Some("M OU MME MONET CLAUDE")
+        );
+
+        let glued = vec![line("M.OU MME MONET CLAUDE", 280, 100, 20, 450)];
+        assert!(civility_line(&glued).is_some());
+
+        // un mot qui commence comme une civilité n'en est pas une
+        let none = vec![
+            line("MONTANT DU VIREMENT", 100, 100, 20, 400),
+            line("Mme", 140, 100, 20, 60),
+        ];
+        assert!(civility_line(&none).is_none());
     }
 
     /// Une forme juridique en tête de ligne tient lieu de civilité : c'est le début du
