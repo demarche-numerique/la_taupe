@@ -14,6 +14,7 @@ fn main() {
         .unwrap();
     let git_hash = String::from_utf8(output.stdout).unwrap();
     println!("cargo:rustc-env=GIT_HASH={}", git_hash);
+    watch_inputs();
 
     let profile = env::var("PROFILE").unwrap_or_default();
 
@@ -21,6 +22,45 @@ fn main() {
         download_models_if_needed();
     } else {
         fake_download_models();
+    }
+}
+
+/// Without any `rerun-if-changed`, Cargo reruns this script only when a file of the
+/// package changes: after a commit that changes no file, GIT_HASH kept the previous
+/// commit, and `--version` (which names the measurement results) lied. Watch the
+/// current commit instead, and what the model download depends on.
+fn watch_inputs() {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=download-models.sh");
+    println!("cargo:rerun-if-changed=models");
+
+    let Ok(output) = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
+    else {
+        return;
+    };
+    let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if git_dir.is_empty() {
+        return;
+    }
+    let git_dir = Path::new(&git_dir);
+
+    // HEAD moves on a checkout; the branch ref, on a commit; packed refs, after a gc.
+    // A watched path that does not exist would rerun the script on every build.
+    let head = git_dir.join("HEAD");
+    println!("cargo:rerun-if-changed={}", head.display());
+    if let Ok(content) = std::fs::read_to_string(&head) {
+        if let Some(reference) = content.strip_prefix("ref: ") {
+            let reference = git_dir.join(reference.trim());
+            if reference.exists() {
+                println!("cargo:rerun-if-changed={}", reference.display());
+            }
+        }
+    }
+    let packed = git_dir.join("packed-refs");
+    if packed.exists() {
+        println!("cargo:rerun-if-changed={}", packed.display());
     }
 }
 
