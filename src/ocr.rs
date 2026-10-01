@@ -365,9 +365,12 @@ fn after_holder_label(s: &str) -> Option<usize> {
 }
 
 fn find_civilite(s: &str) -> Option<usize> {
-    let civilite =
-        Regex::new(r"(?i)(^|\s)(m|monsieur|mr|mademoiselle|ml|mle|mlle|melle|madame|mme)\.?\s")
-            .unwrap();
+    // « M.OU MME » : le point colle la première civilité au « OU » ; sans ce préfixe,
+    // seule « MME » était reconnue, et le titulaire perdait son « M.OU »
+    let civilite = Regex::new(
+        r"(?i)(^|\s)((m|mr|monsieur)\.?\s*ou\s+)?(m|monsieur|mr|mademoiselle|ml|mle|mlle|melle|madame|mme)\.?\s",
+    )
+    .unwrap();
     let prenom_nom_ou =
         Regex::new(r"[[:upper:]]+ +[[:upper:]]+ +OU +[[:upper:]]+ +[[:upper:]]+").unwrap();
     // Une personne morale n'a pas de civilité : sa forme juridique en tête de ligne joue
@@ -823,10 +826,16 @@ fn trim_holder(text: &str, postal_code: &Regex) -> Option<String> {
     // de banque au-dessus suffit — et ferait déborder le bloc vers le haut : le libellé
     // prime alors. Après le libellé, la civilité est dans le bloc : elle reste l'ancre,
     // au plus près du nom.
-    let start = match (find_civilite(text), after_holder_label(text)) {
+    let (civility, label) = (find_civilite(text), after_holder_label(text));
+    let start = match (civility, label) {
         (Some(civility), Some(label)) => Some(civility.max(label)),
         (civility, label) => civility.or(label),
     }?;
+    let start = if Some(start) == civility {
+        care_of_start(text, start, label.unwrap_or(0))
+    } else {
+        start
+    };
     let text = text[start..].trim();
 
     if text.is_empty() {
@@ -851,6 +860,26 @@ fn trim_holder(text: &str, postal_code: &Regex) -> Option<String> {
         .collect();
 
     (!kept.is_empty()).then(|| kept.join("\n"))
+}
+
+/// « CHEZ M. DUPONT » : la civilité est celle de l'hébergeant, le titulaire est la ligne
+/// du dessus. Le bloc commence alors à cette ligne — jamais au-dessus du libellé
+/// (`floor`) —, sinon à la civilité.
+fn care_of_start(text: &str, civility: usize, floor: usize) -> usize {
+    let care_of = Regex::new(r"(?i)(^|\s)(chez|c/o)\s*$").unwrap();
+    // `civility` pointe sur l'espace qui précède la civilité, ou sur le début de ligne
+    let civility_word = civility + text[civility..].len() - text[civility..].trim_start().len();
+    let line_start = text[..civility_word].rfind('\n').map_or(0, |i| i + 1);
+    if !care_of.is_match(&text[line_start..civility_word]) {
+        return civility;
+    }
+    let above = text[..line_start.saturating_sub(1)]
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+    if line_start == 0 || text[above..line_start].trim().is_empty() {
+        return line_start.max(floor);
+    }
+    above.max(floor)
 }
 
 /// Recolle les mots que le bord du recadrage a coupés, d'après la lecture pleine page.
@@ -1040,6 +1069,40 @@ mod tests {
                 &postal_code()
             ),
             None
+        );
+    }
+
+    /// « M.OU MME » : le point colle les deux civilités, le titulaire les garde toutes
+    /// les deux.
+    #[test]
+    fn a_glued_couple_civility_is_kept_whole() {
+        let text = "BIC : BDFEFRPPCCT\nM.OU MME MONET CLAUDE\n12 RUE DES NYMPHEAS\n27620 GIVERNY";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("M.OU MME MONET CLAUDE\n12 RUE DES NYMPHEAS\n27620 GIVERNY")
+        );
+    }
+
+    /// « CHEZ M. … » : la civilité est celle de l'hébergeant, le titulaire est la ligne
+    /// du dessus — sans remonter au-dessus du libellé.
+    #[test]
+    fn a_holder_lodged_care_of_someone_starts_above() {
+        let text = "Domiciliation BDF\nKAHLO FRIDA\nCHEZ M MONET CLAUDE\n12 RUE DES NYMPHEAS\n27620 GIVERNY";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("KAHLO FRIDA\nCHEZ M MONET CLAUDE\n12 RUE DES NYMPHEAS\n27620 GIVERNY")
+        );
+
+        let labelled = "Titulaire : KAHLO FRIDA\nCHEZ M MONET CLAUDE\n27620 GIVERNY";
+        assert_eq!(
+            trim_holder(labelled, &postal_code()).as_deref(),
+            Some("KAHLO FRIDA\nCHEZ M MONET CLAUDE\n27620 GIVERNY")
+        );
+
+        // « CHEZ » en tête du bloc, rien au-dessus : on garde la ligne
+        assert_eq!(
+            trim_holder("CHEZ M MONET CLAUDE\n27620 GIVERNY", &postal_code()).as_deref(),
+            Some("CHEZ M MONET CLAUDE\n27620 GIVERNY")
         );
     }
 
