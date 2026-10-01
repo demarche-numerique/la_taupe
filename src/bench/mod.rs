@@ -116,6 +116,19 @@ fn measure_unguarded(
             file.holder_mismatch = Some(truth::classify_holder_mismatch(expected, found));
         }
     }
+    // titulaire manqué sur un document annoté d'un rectangle : où était le bon bloc — à
+    // condition qu'un RIB ait été lu, sans quoi le titulaire n'a pas même été cherché
+    if rib.is_some() && matches!(file.holder_loose, Verdict::Ko | Verdict::NotFound) {
+        if let Some(truth_box) = truth.holder_box {
+            file.block_diagnosis = Some(truth::diagnose_blocks(
+                truth_box,
+                truth.holder_page.unwrap_or(1),
+                provenance.page,
+                &provenance.holder_blocks,
+                &provenance.ocr_lines,
+            ));
+        }
+    }
     file.known_failure = truth.known_failure;
     file.src = truth.src.clone();
     file.recipe = truth.recipe.clone();

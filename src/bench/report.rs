@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use crate::provenance::{Provenance, TextStats};
 
 use super::profile::{grouped, ProfileSummary};
-use super::truth::{HolderMismatch, Verdict};
+use super::truth::{BlockDiagnosis, HolderMismatch, Verdict};
 
 /// Motif d'abandon, catégorisé plutôt que recopié : un message d'erreur brut pourrait
 /// contenir un fragment du document.
@@ -72,6 +72,8 @@ pub struct FileReport {
     pub unreadable: bool,
     /// Nature de l'écart quand le titulaire est faux.
     pub holder_mismatch: Option<HolderMismatch>,
+    /// Sort du bloc qui couvre le titulaire annoté, quand celui-ci a été manqué.
+    pub block_diagnosis: Option<BlockDiagnosis>,
 }
 
 impl FileReport {
@@ -111,6 +113,7 @@ impl FileReport {
                 .as_ref()
                 .is_some_and(|s| s.is_unreadable()),
             holder_mismatch: None,
+            block_diagnosis: None,
         }
     }
 }
@@ -293,6 +296,14 @@ impl Report {
                     file.holder_blocks_read
                 ));
             }
+            // titulaire manqué, et rectangle annoté : le sort du bon bloc
+            if let Some(diagnosis) = file.block_diagnosis {
+                out.push_str(&format!(
+                    "{:<48}   titulaire annoté : {}\n",
+                    "",
+                    diagnosis.label()
+                ));
+            }
         }
 
         out
@@ -400,6 +411,7 @@ impl Report {
         }));
 
         out.push_str(&self.render_holder_mismatches());
+        out.push_str(&self.render_block_diagnoses());
         out.push_str(&self.render_engines());
         out.push_str(&self.render_durations());
 
@@ -445,6 +457,30 @@ impl Report {
         let mut out = String::from("\nNature des titulaires faux\n");
         for (kind, count) in kinds {
             out.push_str(&format!("  {:<16} {:>3}\n", kind, count));
+        }
+
+        out
+    }
+
+    /// Titulaires manqués, rapportés au rectangle annoté : le bon bloc a-t-il été lu, et
+    /// qu'en a fait le pipeline ? Sépare ce qui relève de la localisation, des filtres
+    /// et du bornage.
+    fn render_block_diagnoses(&self) -> String {
+        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+
+        for file in &self.files {
+            if let Some(diagnosis) = file.block_diagnosis {
+                *kinds.entry(diagnosis.label()).or_insert(0) += 1;
+            }
+        }
+
+        if kinds.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::from("\nTitulaires manqués, d'après le rectangle annoté\n");
+        for (kind, count) in kinds {
+            out.push_str(&format!("  {:<50} {:>3}\n", kind, count));
         }
 
         out
@@ -561,6 +597,7 @@ mod tests {
             text_stats: None,
             unreadable: false,
             holder_mismatch: None,
+            block_diagnosis: None,
         }
     }
 

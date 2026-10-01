@@ -83,17 +83,20 @@ pub fn vec_to_rib_traced(
                 provenance.route = Some(Route::PdfImage);
 
                 let page = largest_image_page(content.clone()).unwrap_or(1);
+                provenance.page = Some(page);
                 let img = pdf_page_to_img_bytes(content, page);
                 Ok(image_bytes_to_rib_traced(img, name, provenance))
             }
         } else {
             provenance.route = Some(Route::PdfImage);
+            provenance.page = Some(1);
 
             let img = pdf_to_img_bytes(content);
             Ok(image_bytes_to_rib_traced(img, name, provenance))
         }
     } else if filetype == "image/png" || filetype == "image/jpeg" {
         provenance.route = Some(Route::Image);
+        provenance.page = Some(1);
 
         Ok(image_bytes_to_rib_traced(content, name, provenance))
     } else if filetype == "text/plain" {
@@ -123,22 +126,25 @@ fn vec_to_ddoc(content: Vec<u8>) -> Result<Option<Ddoc>, String> {
     }
 }
 
+/// Analyse d'un RIB, avec la trace de ce qu'elle a fait.
+pub fn rib_analysis_traced(content: Vec<u8>, name: &str) -> Result<(Analysis, Provenance), String> {
+    let mut provenance = Provenance::default();
+    let rib = vec_to_rib_traced(content, name, &mut provenance)?;
+    let unreadable = rib.is_none()
+        && provenance
+            .page_text_stats
+            .as_ref()
+            .is_some_and(|s| s.is_unreadable());
+
+    Ok((Analysis::Rib { rib, unreadable }, provenance))
+}
+
 impl TryFrom<(Vec<u8>, Option<Hint>, &str)> for Analysis {
     type Error = String;
 
     fn try_from((content, hint, name): (Vec<u8>, Option<Hint>, &str)) -> Result<Self, String> {
         match hint {
-            Some(Hint::Type(Type::Rib)) => {
-                let mut provenance = Provenance::default();
-                let rib = vec_to_rib_traced(content, name, &mut provenance)?;
-                let unreadable = rib.is_none()
-                    && provenance
-                        .page_text_stats
-                        .as_ref()
-                        .is_some_and(|s| s.is_unreadable());
-
-                Ok(Analysis::Rib { rib, unreadable })
-            }
+            Some(Hint::Type(Type::Rib)) => Ok(rib_analysis_traced(content, name)?.0),
             Some(Hint::Type(Type::Twoddoc)) => {
                 let ddoc = vec_to_ddoc(content)?;
 
