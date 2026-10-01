@@ -707,7 +707,7 @@ fn zoom_and_extract_account_holder_traced(
                 continue;
             }
             match trim_holder(&text, &code_postal_line_regex)
-                .map(|h| complete_cut_words(&h, &page_lines))
+                .map(|h| respace_from_page(&complete_cut_words(&h, &page_lines), &page_lines))
             {
                 Some(holder) => {
                     let labelled = holder_label.is_match(&holder);
@@ -777,7 +777,7 @@ fn zoom_and_extract_account_holder_traced(
         };
         match text
             .and_then(|t| trim_holder(&t, &code_postal_line_regex))
-            .map(|h| complete_cut_words(&h, &page_lines))
+            .map(|h| respace_from_page(&complete_cut_words(&h, &page_lines), &page_lines))
         {
             Some(holder) => {
                 let labelled = holder_label.is_match(&holder);
@@ -825,7 +825,7 @@ fn zoom_and_extract_account_holder_traced(
             continue;
         }
         match trim_holder(&text, &code_postal_line_regex)
-            .map(|h| complete_cut_words(&h, &page_lines))
+            .map(|h| respace_from_page(&complete_cut_words(&h, &page_lines), &page_lines))
         {
             Some(holder) => {
                 provenance
@@ -890,15 +890,32 @@ fn zoom_and_extract_account_holder_traced(
 }
 
 /// Lit le recadrage `cropped`, pris à l'abscisse `crop_x` de la page, comme d'habitude,
-/// puis ne garde que les mots dont le centre tombe entre les abscisses `span` de la
+/// puis écarte les morceaux de ligne tout entiers au-delà des abscisses `span` de la
 /// page. La reconnaissance reste celle du recadrage : sur les photos, un recadrage plus
 /// serré se lisait moins bien ; la gouttière ne fait que trier.
+///
+/// On écarte des morceaux — les mots d'une ligne coupés aux grands blancs —, pas des
+/// mots : la gouttière se mesure sur les lignes du code postal, et un nom plus long que
+/// son adresse la traverse ; mot à mot, il perdait son début (« M OU » de
+/// « M OU MME … »). Une ligne qui franchit la gouttière sans blanc n'est pas une autre
+/// colonne.
 fn words_between(cropped: &DynamicImage, crop_x: u32, (lo, hi): (u32, u32)) -> String {
-    words_inside(
-        cropped,
-        (crop_x, 0),
-        (lo, 0, hi.saturating_sub(lo), u32::MAX / 2),
-    )
+    let (lo, hi) = (lo as i32 - crop_x as i32, hi as i32 - crop_x as i32);
+
+    recognize(cropped)
+        .iter()
+        .filter_map(|line| {
+            let kept: Vec<String> = segments(std::slice::from_ref(line))
+                .into_iter()
+                .filter(|s| s.x1 >= lo && s.x0 <= hi)
+                .map(|s| s.text)
+                .collect();
+            (!kept.is_empty()).then(|| kept.join(" "))
+        })
+        // les détections parasites d'un caractère ne font pas une ligne
+        .filter(|l| l.len() > 1)
+        .collect::<Vec<String>>()
+        .join("\n")
 }
 
 /// Relit un bloc d'adresse sans recadrage serré : PP-OCR lit moins bien un texte collé
@@ -1046,6 +1063,69 @@ fn care_of_start(text: &str, civility: usize, floor: usize) -> usize {
         return line_start.max(floor);
     }
     above.max(floor)
+}
+
+/// Rétablit les espaces qu'une ligne du titulaire a perdues, d'après la lecture pleine
+/// page.
+///
+/// PP-OCR n'est pas constant sur les espaces d'un recadrage à l'autre : « 12RUE DES NYMPHEAS »,
+/// « RUE DESNYMPHEAS », alors que la page lue entière les sépare. On ne reprend la ligne de la
+/// page que si elle porte exactement les mêmes caractères, avec plus d'espaces, et partout
+/// de la même façon : jamais un caractère ajouté ni retiré, jamais une espace en moins.
+fn respace_from_page(holder: &str, page_lines: &[String]) -> String {
+    holder
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            let key: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+            // une ligne courte se retrouve n'importe où : on n'y touche pas
+            if key.len() < 6 {
+                return line.to_string();
+            }
+            let spaced: Vec<String> = page_lines
+                .iter()
+                .flat_map(|page| spaced_occurrences(page, &key))
+                .collect();
+            match spaced.split_first() {
+                Some((first, rest))
+                    if rest.iter().all(|s| s == first)
+                        && first.split_whitespace().count() > line.split_whitespace().count() =>
+                {
+                    first.clone()
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Chaque passage de `page` qui porte les caractères `key` dans l'ordre, espaces mis à
+/// part, tel qu'il est espacé dans la page.
+fn spaced_occurrences(page: &str, key: &[char]) -> Vec<String> {
+    let chars: Vec<char> = page.chars().collect();
+    let compact: Vec<(usize, char)> = chars
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.is_whitespace())
+        .map(|(i, c)| (i, *c))
+        .collect();
+    if key.is_empty() || compact.len() < key.len() {
+        return Vec::new();
+    }
+
+    (0..=compact.len() - key.len())
+        .filter(|&start| {
+            compact[start..start + key.len()]
+                .iter()
+                .map(|(_, c)| c)
+                .eq(key.iter())
+        })
+        .map(|start| {
+            let (first, last) = (compact[start].0, compact[start + key.len() - 1].0);
+            chars[first..=last].iter().collect()
+        })
+        .collect()
 }
 
 /// Recolle les mots que le bord du recadrage a coupés, d'après la lecture pleine page.
@@ -1270,6 +1350,42 @@ mod tests {
             trim_holder("CHEZ M MONET CLAUDE\n27620 GIVERNY", &postal_code()).as_deref(),
             Some("CHEZ M MONET CLAUDE\n27620 GIVERNY")
         );
+    }
+
+    /// Une espace perdue au recadrage est reprise de la page ; jamais un caractère, jamais
+    /// une espace retirée, et rien quand la page hésite.
+    #[test]
+    fn spaces_lost_in_the_crop_are_restored_from_the_page() {
+        let page = vec![
+            "BIC BDFEFRPPCCT".to_string(),
+            "12 RUE DES IRIS".to_string(),
+            "M MONET CLAUDE".to_string(),
+        ];
+        assert_eq!(
+            respace_from_page("M MONET CLAUDE\n12 RUE DESIRIS", &page),
+            "M MONET CLAUDE\n12 RUE DES IRIS"
+        );
+
+        // la page colle plus que le recadrage : on garde le recadrage
+        let glued = vec!["12 RUEDES IRIS".to_string()];
+        assert_eq!(
+            respace_from_page("12 RUE DES IRIS", &glued),
+            "12 RUE DES IRIS"
+        );
+
+        // un caractère de plus ou de moins : ce n'est pas la même ligne
+        assert_eq!(
+            respace_from_page("12 RUE DESIRISS", &page),
+            "12 RUE DESIRISS"
+        );
+
+        // deux espacements différents dans la page : on ne choisit pas
+        let doubtful = vec![
+            "8 RUE DES IRIS".to_string(),
+            "8RUE DES IRIS".to_string(),
+            "8 RUEDES IRIS".to_string(),
+        ];
+        assert_eq!(respace_from_page("8RUEDES IRIS", &doubtful), "8RUEDES IRIS");
     }
 
     #[test]
