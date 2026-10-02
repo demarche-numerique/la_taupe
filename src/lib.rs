@@ -1,9 +1,11 @@
+pub mod address_blocks;
 pub mod analysis;
 #[cfg(feature = "bench")]
 pub mod bench;
 pub mod datamatrix;
 pub mod fi_extract;
 pub mod file_utils;
+pub mod gutters;
 pub mod http;
 pub mod image_utils;
 pub mod lines;
