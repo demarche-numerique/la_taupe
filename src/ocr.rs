@@ -562,7 +562,40 @@ fn page_rect(
     Some([a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)])
 }
 
+/// Le titulaire du chemin image, collages de l'OCR redressés.
 fn zoom_and_extract_account_holder_traced(
+    img: &DynamicImage,
+    text_lines: Vec<TextLine>,
+    name: &str,
+    provenance: &mut Provenance,
+    turn: Option<u16>,
+) -> Option<String> {
+    find_account_holder(img, text_lines, name, provenance, turn).map(|h| unglue(&h))
+}
+
+/// Redresse, ligne à ligne, deux collages que PP-OCR fait sur les titulaires : le numéro
+/// de voie collé à son type (« 3RUE », « 14ALLEE », « 2BISRUE »), et la civilité de
+/// couple dont l'espace a sauté (« MOU MME »). Le découpage des mots ne sépare un nombre
+/// de ce qui le suit qu'à partir de deux chiffres — « 2A », « 1ER » ne sont pas des
+/// frontières — ; ici, le mot qui suit est un type de voie connu, en tête de ligne.
+fn unglue(holder: &str) -> String {
+    let street = Regex::new(
+        r"(?i)^(\s*\d{1,4}(?:\s?(?:BIS|TER))?)(RUE|AVENUE|AV|ALLEES?|BD|BOULEVARD|CHEMIN|IMPASSE|IMP|PLACE|ROUTE|RTE|QUAI|COURS|SQUARE|RESIDENCE|LOTISSEMENT|CHAUSSEE|FAUBOURG|PASSAGE|HAMEAU|CITE|DOMAINE|SENTIER|VOIE|PROMENADE|ESPLANADE|PARVIS|MONTEE|VILLA|CLOS|LIEU)\b",
+    )
+    .unwrap();
+    let couple = Regex::new(r"(?i)^(\s*)M\.?OU\s+(MME|MADAME|MLLE|MELLE)\b").unwrap();
+
+    holder
+        .lines()
+        .map(|line| {
+            let line = street.replace(line, "$1 $2");
+            couple.replace(&line, "${1}M OU $2").into_owned()
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+fn find_account_holder(
     img: &DynamicImage,
     text_lines: Vec<TextLine>,
     name: &str,
@@ -1386,6 +1419,24 @@ mod tests {
             "8 RUEDES IRIS".to_string(),
         ];
         assert_eq!(respace_from_page("8RUEDES IRIS", &doubtful), "8RUEDES IRIS");
+    }
+
+    /// Le numéro collé à son type de voie et la civilité de couple collée sont
+    /// redressés ; un identifiant, un mot qui commence comme une voie, non.
+    #[test]
+    fn glued_street_numbers_and_couples_are_unglued() {
+        assert_eq!(
+            unglue("MOU MME MONET CLAUDE\n3RUE DES IRIS\n14ALLEE DES NYMPHEAS\n27620 GIVERNY"),
+            "M OU MME MONET CLAUDE\n3 RUE DES IRIS\n14 ALLEE DES NYMPHEAS\n27620 GIVERNY"
+        );
+        assert_eq!(unglue("2BISRUE DES IRIS"), "2BIS RUE DES IRIS");
+        assert_eq!(unglue("M.OU MME KAHLO"), "M OU MME KAHLO");
+
+        // déjà espacé, ou pas une voie : rien ne change
+        assert_eq!(unglue("3 RUE DES IRIS"), "3 RUE DES IRIS");
+        assert_eq!(unglue("1ER ETAGE"), "1ER ETAGE");
+        assert_eq!(unglue("3RUELLE DES IRIS"), "3RUELLE DES IRIS");
+        assert_eq!(unglue("MOUTON CLAUDE"), "MOUTON CLAUDE");
     }
 
     #[test]

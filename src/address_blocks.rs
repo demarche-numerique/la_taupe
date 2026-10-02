@@ -161,18 +161,24 @@ pub fn segments(lines: &[TextLine]) -> Vec<Segment> {
     out
 }
 
+/// Écart vertical ordinaire entre deux lignes d'un bloc : une ligne et demie, en
+/// hauteurs de ligne multipliées par deux.
+const NEAR: i32 = 3;
+/// Écart qui saute une ligne vide : trois lignes et demie.
+const OVER_A_BLANK: i32 = 7;
+
 /// Le morceau `s` prolonge-t-il le bloc vers le haut (ou vers le bas, `down`) : proche
-/// d'au plus une ligne et demie, de même corps, et aligné — même bord gauche, même bord
+/// d'au plus `reach` demi-lignes, de même corps, et aligné — même bord gauche, même bord
 /// droit ou même centre, à deux hauteurs de ligne près. Un libellé n'a pas à être
 /// aligné : il suffit qu'il chevauche le bloc.
-fn extends(block: &Block, s: &Segment, label: bool, down: bool) -> bool {
+fn extends(block: &Block, s: &Segment, label: bool, down: bool, reach: i32) -> bool {
     let line = block.line;
     let gap = if down {
         s.y0 - block.y1
     } else {
         block.y0 - s.y1
     };
-    if gap > line * 3 / 2 || gap < -line / 2 {
+    if gap > line * reach / 2 || gap < -line / 2 {
         return false;
     }
     let ratio = s.height() as f32 / line as f32;
@@ -238,13 +244,25 @@ pub fn address_blocks(segments: &[Segment]) -> Vec<Block> {
         let above = |block: &Block, taken: &[bool]| {
             (0..segments.len())
                 .filter(|&i| !taken[i] && segments[i].y1 <= block.y0 + block.line / 2)
-                .filter(|&i| extends(block, &segments[i], marks[i].label, false))
+                .filter(|&i| extends(block, &segments[i], marks[i].label, false, NEAR))
                 .max_by_key(|&i| segments[i].y1)
                 // une autre ligne de code postal : un autre bloc commence
                 .filter(|&i| !marks[i].postal && !marks[i].field)
         };
+        // Une ligne vide sépare parfois le nom de son adresse (« M DUPONT / (vide) /
+        // 12 RUE … / 75001 PARIS ») : la croissance s'y arrêtait, sous le nom. On saute
+        // ce blanc, mais seulement vers une civilité ou un libellé — vers une ligne
+        // quelconque, les blocs voisins se souderaient.
+        let over_a_blank = |block: &Block, taken: &[bool]| {
+            (0..segments.len())
+                .filter(|&i| !taken[i] && segments[i].y1 <= block.y0)
+                .filter(|&i| marks[i].civility || marks[i].label)
+                .filter(|&i| !marks[i].domiciliation)
+                .filter(|&i| extends(block, &segments[i], marks[i].label, false, OVER_A_BLANK))
+                .max_by_key(|&i| segments[i].y1)
+        };
         while block.members.len() < MAX_LINES && !block.civility && !block.labelled {
-            let Some(next) = above(&block, &taken) else {
+            let Some(next) = above(&block, &taken).or_else(|| over_a_blank(&block, &taken)) else {
                 break;
             };
             taken[next] = true;
@@ -292,10 +310,15 @@ pub fn address_blocks(segments: &[Segment]) -> Vec<Block> {
         taken[start] = true;
         let mut block = seed(start, &segments[start], marks[start]);
         while block.members.len() < MAX_LINES && !block.postal {
-            let next = (0..segments.len())
-                .filter(|&i| !taken[i] && segments[i].y0 >= block.y1 - block.line / 2)
-                .filter(|&i| extends(&block, &segments[i], false, true))
-                .min_by_key(|&i| segments[i].y0);
+            let below = |reach: i32| {
+                (0..segments.len())
+                    .filter(|&i| !taken[i] && segments[i].y0 >= block.y1 - block.line / 2)
+                    .filter(|&i| extends(&block, &segments[i], false, true, reach))
+                    .min_by_key(|&i| segments[i].y0)
+            };
+            // par-dessus une ligne vide, seulement vers l'adresse : une voie, un code postal
+            let next = below(NEAR)
+                .or_else(|| below(OVER_A_BLANK).filter(|&i| marks[i].street || marks[i].postal));
             let Some(next) = next else { break };
             if marks[next].civility || marks[next].label || marks[next].field {
                 break;
@@ -454,6 +477,36 @@ mod tests {
             seg("Libellé du sous-compte :", 100, 130, 420),
         ];
         assert!(address_blocks(&page).is_empty());
+    }
+
+    /// Une ligne vide entre le nom et l'adresse : la croissance la franchit vers la
+    /// civilité, dans les deux sens ; jamais vers une ligne quelconque.
+    #[test]
+    fn a_blank_line_between_name_and_address_is_crossed_towards_a_civility() {
+        let page = vec![
+            seg("Titulaire du compte", 100, 40, 400),
+            seg("M MONET CLAUDE", 100, 70, 350),
+            seg("12 RUE DES NYMPHEAS", 100, 130, 420),
+            seg("27620 GIVERNY", 100, 160, 300),
+        ];
+        let blocks = address_blocks(&page);
+        assert_eq!(blocks[0].members, vec![3, 2, 1]);
+        assert!(blocks[0].is_holder_like());
+
+        // sans code postal lu : la civilité descend par-dessus le blanc jusqu'à la voie
+        let unread = vec![
+            seg("M MONET CLAUDE", 100, 70, 350),
+            seg("12 RUE DES NYMPHEAS", 100, 130, 420),
+        ];
+        assert_eq!(address_blocks(&unread)[0].members, vec![0, 1]);
+
+        // une ligne quelconque au-delà d'un blanc reste dehors
+        let other = vec![
+            seg("RELEVE D IDENTITE BANCAIRE", 100, 70, 500),
+            seg("12 RUE DES NYMPHEAS", 100, 130, 420),
+            seg("27620 GIVERNY", 100, 160, 300),
+        ];
+        assert_eq!(address_blocks(&other)[0].members, vec![2, 1]);
     }
 
     /// La marge s'arrête au bord du libellé voisin.
