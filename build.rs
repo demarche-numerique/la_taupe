@@ -18,9 +18,33 @@ fn main() {
     let profile = env::var("PROFILE").unwrap_or_default();
 
     if profile == "release" {
+        refuse_uncommitted_changes();
         download_models_if_needed();
     } else {
         fake_download_models();
+    }
+}
+
+/// GIT_HASH names the bench results: a release binary built from uncommitted code
+/// would carry the hash of a commit it does not match. A failed build script leaves
+/// no fingerprint, so Cargo reruns it once the work is committed, and GIT_HASH
+/// follows. Untracked files do not count; without a git repository, nothing is checked.
+fn refuse_uncommitted_changes() {
+    let Ok(output) = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let changes = String::from_utf8_lossy(&output.stdout);
+    if !changes.trim().is_empty() {
+        panic!(
+            "release build refused: uncommitted changes, GIT_HASH would not match the code\n{}",
+            changes
+        );
     }
 }
 
