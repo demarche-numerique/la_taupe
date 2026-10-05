@@ -5,9 +5,11 @@ use log::trace;
 use regex::Regex;
 
 use crate::{
+    address_blocks::{address_blocks, read_rect, segments},
+    gutters::column_span,
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
     lines::{extract_anchors, max_line_height, TextLine},
-    ppocr::{image_to_string, recognize_anchors},
+    ppocr::{image_to_string, recognize, recognize_anchors},
     provenance::{AnchorSource, BlockOutcome, Engine, HolderBlock, OcrLine, Provenance, TextStats},
     rib::{extract_fr_bic, extract_iban, join_cell_letters, Rib},
     shapes::{Anchor, Point},
@@ -365,9 +367,12 @@ fn after_holder_label(s: &str) -> Option<usize> {
 }
 
 fn find_civilite(s: &str) -> Option<usize> {
-    let civilite =
-        Regex::new(r"(?i)(^|\s)(m|monsieur|mr|mademoiselle|ml|mle|mlle|melle|madame|mme)\.?\s")
-            .unwrap();
+    // « M.OU MME » : le point colle la première civilité au « OU » ; sans ce préfixe,
+    // seule « MME » était reconnue, et le titulaire perdait son « M.OU »
+    let civilite = Regex::new(
+        r"(?i)(^|\s)((m|mr|monsieur)\.?\s*ou\s+)?(m|monsieur|mr|mademoiselle|ml|mle|mlle|melle|madame|mme)\.?\s",
+    )
+    .unwrap();
     let prenom_nom_ou =
         Regex::new(r"[[:upper:]]+ +[[:upper:]]+ +OU +[[:upper:]]+ +[[:upper:]]+").unwrap();
     // Une personne morale n'a pas de civilité : sa forme juridique en tête de ligne joue
@@ -557,7 +562,40 @@ fn page_rect(
     Some([a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)])
 }
 
+/// Le titulaire du chemin image, collages de l'OCR redressés.
 fn zoom_and_extract_account_holder_traced(
+    img: &DynamicImage,
+    text_lines: Vec<TextLine>,
+    name: &str,
+    provenance: &mut Provenance,
+    turn: Option<u16>,
+) -> Option<String> {
+    find_account_holder(img, text_lines, name, provenance, turn).map(|h| unglue(&h))
+}
+
+/// Redresse, ligne à ligne, deux collages que PP-OCR fait sur les titulaires : le numéro
+/// de voie collé à son type (« 3RUE », « 14ALLEE », « 2BISRUE »), et la civilité de
+/// couple dont l'espace a sauté (« MOU MME »). Le découpage des mots ne sépare un nombre
+/// de ce qui le suit qu'à partir de deux chiffres — « 2A », « 1ER » ne sont pas des
+/// frontières — ; ici, le mot qui suit est un type de voie connu, en tête de ligne.
+fn unglue(holder: &str) -> String {
+    let street = Regex::new(
+        r"(?i)^(\s*\d{1,4}(?:\s?(?:BIS|TER))?)(RUE|AVENUE|AV|ALLEES?|BD|BOULEVARD|CHEMIN|IMPASSE|IMP|PLACE|ROUTE|RTE|QUAI|COURS|SQUARE|RESIDENCE|LOTISSEMENT|CHAUSSEE|FAUBOURG|PASSAGE|HAMEAU|CITE|DOMAINE|SENTIER|VOIE|PROMENADE|ESPLANADE|PARVIS|MONTEE|VILLA|CLOS|LIEU)\b",
+    )
+    .unwrap();
+    let couple = Regex::new(r"(?i)^(\s*)M\.?OU\s+(MME|MADAME|MLLE|MELLE)\b").unwrap();
+
+    holder
+        .lines()
+        .map(|line| {
+            let line = street.replace(line, "$1 $2");
+            couple.replace(&line, "${1}M OU $2").into_owned()
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+fn find_account_holder(
     img: &DynamicImage,
     text_lines: Vec<TextLine>,
     name: &str,
@@ -664,12 +702,72 @@ fn zoom_and_extract_account_holder_traced(
     ranked.sort_by_key(|(_, _, score)| -*score);
     provenance.holder_candidates = ranked.len() as u32;
 
+    // Les blocs d'adresse reconstruits ligne à ligne : bornés par la page elle-même, pas
+    // par un multiple du code postal. Le choix du code postal reste celui d'en dessous —
+    // son voisinage (libellé, domiciliation) choisit mieux que l'ordre de la page.
+    let segments = segments(&text_lines);
+    let address_blocks = address_blocks(&segments);
+    let block_of = |anchor: &Anchor| {
+        let (cx, cy) = (
+            ((anchor.top_left.x + anchor.bottom_right.x) / 2) as i32,
+            ((anchor.top_left.y + anchor.bottom_right.y) / 2) as i32,
+        );
+        address_blocks.iter().find(|b| {
+            let s = &segments[b.members[0]];
+            b.postal && b.is_holder_like() && cx >= s.x0 && cx <= s.x1 && cy >= s.y0 && cy <= s.y1
+        })
+    };
+
     // chaque titulaire recevable, avec l'indice de son bloc dans la trace
     let mut account_holders: Vec<(String, usize)> = Vec::new();
     for (index, anchor, score) in ranked {
         provenance.holder_blocks_read += 1;
+        // le code postal ferme un bloc d'adresse désigné : on relit ce bloc, borné par
+        // la page, et lui seul
+        if let Some(address_block) = block_of(anchor) {
+            let mask = read_rect(address_block, &segments);
+            let text = read_address_block(
+                img,
+                around(mask, address_block.line),
+                mask,
+                name,
+                &format!("{}_address_block", index),
+            );
+            if domiciliation.is_match(&text) && !holder_label.is_match(&text) {
+                provenance
+                    .holder_blocks
+                    .push(block(mask, BlockOutcome::Domiciliation));
+                continue;
+            }
+            match trim_holder(&text, &code_postal_line_regex)
+                .map(|h| respace_from_page(&complete_cut_words(&h, &page_lines), &page_lines))
+            {
+                Some(holder) => {
+                    let labelled = holder_label.is_match(&holder);
+                    account_holders.push((holder, provenance.holder_blocks.len()));
+                    provenance
+                        .holder_blocks
+                        .push(block(mask, BlockOutcome::Outranked));
+                    if labelled || score >= 1 {
+                        break;
+                    }
+                    continue;
+                }
+                // relu de travers : le recadrage d'en dessous a encore sa chance
+                None => provenance
+                    .holder_blocks
+                    .push(block(mask, BlockOutcome::Trimmed)),
+            }
+        }
         let addr_mask = anchor.addr_mask();
-        let text = read_mask(index, addr_mask, "addr_mask");
+        // la colonne voisine, au-delà d'une gouttière, n'est pas le titulaire
+        let text = match column_span(img, anchor) {
+            Some(span) => {
+                let cropped = crop(img, addr_mask, name, &format!("{}_addr_mask", index));
+                words_between(&cropped, addr_mask.0, span)
+            }
+            None => read_mask(index, addr_mask, "addr_mask"),
+        };
         // un bloc qui se présente comme domiciliation ne devient pas titulaire, même
         // en le recadrant autrement
         if domiciliation.is_match(&text) && !holder_label.is_match(&text) {
@@ -712,7 +810,7 @@ fn zoom_and_extract_account_holder_traced(
         };
         match text
             .and_then(|t| trim_holder(&t, &code_postal_line_regex))
-            .map(|h| complete_cut_words(&h, &page_lines))
+            .map(|h| respace_from_page(&complete_cut_words(&h, &page_lines), &page_lines))
         {
             Some(holder) => {
                 let labelled = holder_label.is_match(&holder);
@@ -737,6 +835,41 @@ fn zoom_and_extract_account_holder_traced(
     if let Some((holder, kept)) = account_holders.into_iter().next() {
         provenance.holder_blocks[kept].outcome = BlockOutcome::Kept;
         return Some(holder);
+    }
+
+    // Aucun code postal n'a mené au titulaire — souvent parce qu'il n'a pas été lu :
+    // une civilité fait alors son bloc en descendant, jusqu'à un blanc.
+    let civility_blocks = address_blocks
+        .iter()
+        .filter(|b| !b.postal && b.is_holder_like());
+    for (index, address_block) in civility_blocks.enumerate() {
+        let mask = read_rect(address_block, &segments);
+        let text = read_address_block(
+            img,
+            around(mask, address_block.line),
+            mask,
+            name,
+            &format!("{}_civility_block", index),
+        );
+        if domiciliation.is_match(&text) && !holder_label.is_match(&text) {
+            provenance
+                .holder_blocks
+                .push(block(mask, BlockOutcome::Domiciliation));
+            continue;
+        }
+        match trim_holder(&text, &code_postal_line_regex)
+            .map(|h| respace_from_page(&complete_cut_words(&h, &page_lines), &page_lines))
+        {
+            Some(holder) => {
+                provenance
+                    .holder_blocks
+                    .push(block(mask, BlockOutcome::Kept));
+                return Some(holder);
+            }
+            None => provenance
+                .holder_blocks
+                .push(block(mask, BlockOutcome::Trimmed)),
+        }
     }
 
     // Le mot « titulaire » se cherche dans les lignes déjà reconnues : relancer la
@@ -789,6 +922,92 @@ fn zoom_and_extract_account_holder_traced(
     Some(line.to_string().trim().to_string())
 }
 
+/// Lit le recadrage `cropped`, pris à l'abscisse `crop_x` de la page, comme d'habitude,
+/// puis écarte les morceaux de ligne tout entiers au-delà des abscisses `span` de la
+/// page. La reconnaissance reste celle du recadrage : sur les photos, un recadrage plus
+/// serré se lisait moins bien ; la gouttière ne fait que trier.
+///
+/// On écarte des morceaux — les mots d'une ligne coupés aux grands blancs —, pas des
+/// mots : la gouttière se mesure sur les lignes du code postal, et un nom plus long que
+/// son adresse la traverse ; mot à mot, il perdait son début (« M OU » de
+/// « M OU MME … »). Une ligne qui franchit la gouttière sans blanc n'est pas une autre
+/// colonne.
+fn words_between(cropped: &DynamicImage, crop_x: u32, (lo, hi): (u32, u32)) -> String {
+    let (lo, hi) = (lo as i32 - crop_x as i32, hi as i32 - crop_x as i32);
+
+    recognize(cropped)
+        .iter()
+        .filter_map(|line| {
+            let kept: Vec<String> = segments(std::slice::from_ref(line))
+                .into_iter()
+                .filter(|s| s.x1 >= lo && s.x0 <= hi)
+                .map(|s| s.text)
+                .collect();
+            (!kept.is_empty()).then(|| kept.join(" "))
+        })
+        // les détections parasites d'un caractère ne font pas une ligne
+        .filter(|l| l.len() > 1)
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Relit un bloc d'adresse sans recadrage serré : PP-OCR lit moins bien un texte collé
+/// au bord — sur les photos, un recadrage au ras du bloc dédoublait une ligne ou
+/// faussait le nom. On lit le recadrage large d'en dessous, étendu au bloc, et on ne
+/// garde que les mots du bloc.
+fn read_address_block(
+    img: &DynamicImage,
+    wide: (u32, u32, u32, u32),
+    block: (u32, u32, u32, u32),
+    name: &str,
+    suffix: &str,
+) -> String {
+    let (x, y) = (wide.0.min(block.0), wide.1.min(block.1));
+    let right = (wide.0 + wide.2).max(block.0 + block.2);
+    let bottom = (wide.1 + wide.3).max(block.1 + block.3);
+    let cropped = crop(img, (x, y, right - x, bottom - y), name, suffix);
+    words_inside(&cropped, (x, y), block)
+}
+
+/// Le rectangle élargi d'une ligne et demie de chaque côté : assez de contexte pour la
+/// reconnaissance, encore assez près pour un vrai zoom.
+fn around((x, y, w, h): (u32, u32, u32, u32), line: i32) -> (u32, u32, u32, u32) {
+    let margin = (line.max(1) as u32) * 3 / 2;
+    let (x0, y0) = (x.saturating_sub(margin), y.saturating_sub(margin));
+    (x0, y0, x + w + margin - x0, y + h + margin - y0)
+}
+
+/// Lit le recadrage `cropped`, pris en `origin` dans la page, et ne garde que les mots
+/// dont le centre tombe dans le rectangle `keep` (x, y, largeur, hauteur) de la page.
+fn words_inside(
+    cropped: &DynamicImage,
+    (ox, oy): (u32, u32),
+    (kx, ky, kw, kh): (u32, u32, u32, u32),
+) -> String {
+    let (x0, y0) = (kx as i64 - ox as i64, ky as i64 - oy as i64);
+    let (x1, y1) = (x0 + kw as i64, y0 + kh as i64);
+    let inside = |r: crate::lines::Rect| {
+        let cx = ((r.left() + r.right()) / 2) as i64;
+        let cy = ((r.top() + r.bottom()) / 2) as i64;
+        cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1
+    };
+
+    recognize(cropped)
+        .iter()
+        .filter_map(|line| {
+            let kept: Vec<String> = line
+                .words()
+                .filter(|w| inside(w.bounding_rect()))
+                .map(|w| w.to_string())
+                .collect();
+            (!kept.is_empty()).then(|| kept.join(" "))
+        })
+        // les détections parasites d'un caractère ne font pas une ligne
+        .filter(|l| l.len() > 1)
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
 /// Première ligne de la page, de haut en bas, qui commence par une civilité suivie d'un
 /// nom : « M DUPONT », « MME DUPONT », « M OU MME DUPONT », « M.OU MME DUPONT ». Un mot
 /// qui commence comme une civilité (« MONTANT », « Mode de paiement ») n'en est pas une.
@@ -823,10 +1042,16 @@ fn trim_holder(text: &str, postal_code: &Regex) -> Option<String> {
     // de banque au-dessus suffit — et ferait déborder le bloc vers le haut : le libellé
     // prime alors. Après le libellé, la civilité est dans le bloc : elle reste l'ancre,
     // au plus près du nom.
-    let start = match (find_civilite(text), after_holder_label(text)) {
+    let (civility, label) = (find_civilite(text), after_holder_label(text));
+    let start = match (civility, label) {
         (Some(civility), Some(label)) => Some(civility.max(label)),
         (civility, label) => civility.or(label),
     }?;
+    let start = if Some(start) == civility {
+        care_of_start(text, start, label.unwrap_or(0))
+    } else {
+        start
+    };
     let text = text[start..].trim();
 
     if text.is_empty() {
@@ -851,6 +1076,89 @@ fn trim_holder(text: &str, postal_code: &Regex) -> Option<String> {
         .collect();
 
     (!kept.is_empty()).then(|| kept.join("\n"))
+}
+
+/// « CHEZ M. DUPONT » : la civilité est celle de l'hébergeant, le titulaire est la ligne
+/// du dessus. Le bloc commence alors à cette ligne — jamais au-dessus du libellé
+/// (`floor`) —, sinon à la civilité.
+fn care_of_start(text: &str, civility: usize, floor: usize) -> usize {
+    let care_of = Regex::new(r"(?i)(^|\s)(chez|c/o)\s*$").unwrap();
+    // `civility` pointe sur l'espace qui précède la civilité, ou sur le début de ligne
+    let civility_word = civility + text[civility..].len() - text[civility..].trim_start().len();
+    let line_start = text[..civility_word].rfind('\n').map_or(0, |i| i + 1);
+    if !care_of.is_match(&text[line_start..civility_word]) {
+        return civility;
+    }
+    let above = text[..line_start.saturating_sub(1)]
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+    if line_start == 0 || text[above..line_start].trim().is_empty() {
+        return line_start.max(floor);
+    }
+    above.max(floor)
+}
+
+/// Rétablit les espaces qu'une ligne du titulaire a perdues, d'après la lecture pleine
+/// page.
+///
+/// PP-OCR n'est pas constant sur les espaces d'un recadrage à l'autre : « 12RUE DES NYMPHEAS »,
+/// « RUE DESNYMPHEAS », alors que la page lue entière les sépare. On ne reprend la ligne de la
+/// page que si elle porte exactement les mêmes caractères, avec plus d'espaces, et partout
+/// de la même façon : jamais un caractère ajouté ni retiré, jamais une espace en moins.
+fn respace_from_page(holder: &str, page_lines: &[String]) -> String {
+    holder
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            let key: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+            // une ligne courte se retrouve n'importe où : on n'y touche pas
+            if key.len() < 6 {
+                return line.to_string();
+            }
+            let spaced: Vec<String> = page_lines
+                .iter()
+                .flat_map(|page| spaced_occurrences(page, &key))
+                .collect();
+            match spaced.split_first() {
+                Some((first, rest))
+                    if rest.iter().all(|s| s == first)
+                        && first.split_whitespace().count() > line.split_whitespace().count() =>
+                {
+                    first.clone()
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Chaque passage de `page` qui porte les caractères `key` dans l'ordre, espaces mis à
+/// part, tel qu'il est espacé dans la page.
+fn spaced_occurrences(page: &str, key: &[char]) -> Vec<String> {
+    let chars: Vec<char> = page.chars().collect();
+    let compact: Vec<(usize, char)> = chars
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.is_whitespace())
+        .map(|(i, c)| (i, *c))
+        .collect();
+    if key.is_empty() || compact.len() < key.len() {
+        return Vec::new();
+    }
+
+    (0..=compact.len() - key.len())
+        .filter(|&start| {
+            compact[start..start + key.len()]
+                .iter()
+                .map(|(_, c)| c)
+                .eq(key.iter())
+        })
+        .map(|start| {
+            let (first, last) = (compact[start].0, compact[start + key.len() - 1].0);
+            chars[first..=last].iter().collect()
+        })
+        .collect()
 }
 
 /// Recolle les mots que le bord du recadrage a coupés, d'après la lecture pleine page.
@@ -1041,6 +1349,94 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// « M.OU MME » : le point colle les deux civilités, le titulaire les garde toutes
+    /// les deux.
+    #[test]
+    fn a_glued_couple_civility_is_kept_whole() {
+        let text = "BIC : BDFEFRPPCCT\nM.OU MME MONET CLAUDE\n12 RUE DES NYMPHEAS\n27620 GIVERNY";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("M.OU MME MONET CLAUDE\n12 RUE DES NYMPHEAS\n27620 GIVERNY")
+        );
+    }
+
+    /// « CHEZ M. … » : la civilité est celle de l'hébergeant, le titulaire est la ligne
+    /// du dessus — sans remonter au-dessus du libellé.
+    #[test]
+    fn a_holder_lodged_care_of_someone_starts_above() {
+        let text = "Domiciliation BDF\nKAHLO FRIDA\nCHEZ M MONET CLAUDE\n12 RUE DES NYMPHEAS\n27620 GIVERNY";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("KAHLO FRIDA\nCHEZ M MONET CLAUDE\n12 RUE DES NYMPHEAS\n27620 GIVERNY")
+        );
+
+        let labelled = "Titulaire : KAHLO FRIDA\nCHEZ M MONET CLAUDE\n27620 GIVERNY";
+        assert_eq!(
+            trim_holder(labelled, &postal_code()).as_deref(),
+            Some("KAHLO FRIDA\nCHEZ M MONET CLAUDE\n27620 GIVERNY")
+        );
+
+        // « CHEZ » en tête du bloc, rien au-dessus : on garde la ligne
+        assert_eq!(
+            trim_holder("CHEZ M MONET CLAUDE\n27620 GIVERNY", &postal_code()).as_deref(),
+            Some("CHEZ M MONET CLAUDE\n27620 GIVERNY")
+        );
+    }
+
+    /// Une espace perdue au recadrage est reprise de la page ; jamais un caractère, jamais
+    /// une espace retirée, et rien quand la page hésite.
+    #[test]
+    fn spaces_lost_in_the_crop_are_restored_from_the_page() {
+        let page = vec![
+            "BIC BDFEFRPPCCT".to_string(),
+            "12 RUE DES IRIS".to_string(),
+            "M MONET CLAUDE".to_string(),
+        ];
+        assert_eq!(
+            respace_from_page("M MONET CLAUDE\n12 RUE DESIRIS", &page),
+            "M MONET CLAUDE\n12 RUE DES IRIS"
+        );
+
+        // la page colle plus que le recadrage : on garde le recadrage
+        let glued = vec!["12 RUEDES IRIS".to_string()];
+        assert_eq!(
+            respace_from_page("12 RUE DES IRIS", &glued),
+            "12 RUE DES IRIS"
+        );
+
+        // un caractère de plus ou de moins : ce n'est pas la même ligne
+        assert_eq!(
+            respace_from_page("12 RUE DESIRISS", &page),
+            "12 RUE DESIRISS"
+        );
+
+        // deux espacements différents dans la page : on ne choisit pas
+        let doubtful = vec![
+            "8 RUE DES IRIS".to_string(),
+            "8RUE DES IRIS".to_string(),
+            "8 RUEDES IRIS".to_string(),
+        ];
+        assert_eq!(respace_from_page("8RUEDES IRIS", &doubtful), "8RUEDES IRIS");
+    }
+
+    /// Le numéro collé à son type de voie et la civilité de couple collée sont
+    /// redressés ; un identifiant, un mot qui commence comme une voie, non.
+    #[test]
+    fn glued_street_numbers_and_couples_are_unglued() {
+        assert_eq!(
+            unglue("MOU MME MONET CLAUDE\n3RUE DES IRIS\n14ALLEE DES NYMPHEAS\n27620 GIVERNY"),
+            "M OU MME MONET CLAUDE\n3 RUE DES IRIS\n14 ALLEE DES NYMPHEAS\n27620 GIVERNY"
+        );
+        assert_eq!(unglue("2BISRUE DES IRIS"), "2BIS RUE DES IRIS");
+        assert_eq!(unglue("M.OU MME KAHLO"), "M OU MME KAHLO");
+
+        // déjà espacé, ou pas une voie : rien ne change
+        assert_eq!(unglue("3 RUE DES IRIS"), "3 RUE DES IRIS");
+        assert_eq!(unglue("1ER ETAGE"), "1ER ETAGE");
+        assert_eq!(unglue("3RUELLE DES IRIS"), "3RUELLE DES IRIS");
+        assert_eq!(unglue("MOUTON CLAUDE"), "MOUTON CLAUDE");
     }
 
     #[test]
