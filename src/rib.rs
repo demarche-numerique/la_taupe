@@ -7,13 +7,16 @@ use crate::{
     fi_extract::IbanToBankName,
     text::{
         address::find_account_holder_addr, cleanup::clean_holder, communes::fix_holder_city,
-        simple_account_holder::find_simple_account_holder,
+        holder_parts::split_holder, simple_account_holder::find_simple_account_holder,
     },
 };
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Rib {
     account_holder: Option<String>,
+    /// Le titulaire en deux parties, tirées du bloc complet `account_holder`.
+    account_holder_name: Option<String>,
+    account_holder_address: Option<String>,
     iban: String,
     bic: Option<String>,
     bank_name: Option<String>,
@@ -28,9 +31,15 @@ impl Rib {
         let account_holder = account_holder
             .and_then(|h| clean_holder(&h))
             .map(|h| fix_holder_city(&h));
+        let (account_holder_name, account_holder_address) = account_holder
+            .as_deref()
+            .map(split_holder)
+            .unwrap_or((None, None));
 
         Rib {
             account_holder,
+            account_holder_name,
+            account_holder_address,
             iban,
             bic,
             bank_name,
@@ -57,6 +66,14 @@ impl Rib {
 
     pub fn account_holder(&self) -> Option<&str> {
         self.account_holder.as_deref()
+    }
+
+    pub fn account_holder_name(&self) -> Option<&str> {
+        self.account_holder_name.as_deref()
+    }
+
+    pub fn account_holder_address(&self) -> Option<&str> {
+        self.account_holder_address.as_deref()
     }
 
     pub fn bank_name(&self) -> Option<&str> {
@@ -575,14 +592,28 @@ mod tests {
 
     fn test_file(path: &str, account_holder: Option<Vec<&str>>, iban: &str, bic: &str) {
         let account_holder = account_holder.map(|v| v.join("\n"));
+        let rib = to_rib(path);
+        assert_eq!(rib.account_holder(), account_holder.as_deref());
+        assert_eq!(rib.iban(), iban);
+        assert_eq!(rib.bic(), Some(bic));
+        assert_eq!(rib.bank_name(), None);
+    }
+
+    /// Le nom et l'adresse sont tirés du bloc complet, qui reste inchangé.
+    #[test]
+    fn the_holder_comes_out_as_name_and_address() {
+        let rib = to_rib("tests/fixtures/rib/banque_populaire_2.txt");
         assert_eq!(
-            to_rib(path),
-            Rib {
-                account_holder,
-                iban: iban.to_string(),
-                bic: Some(bic.to_string()),
-                bank_name: None
-            }
+            rib.account_holder_name(),
+            Some("M HENRI MATISSE OU MLLE\nFRIDA KAHLO")
+        );
+        assert_eq!(
+            rib.account_holder_address(),
+            Some("31 AVENUE JULES RENARD\n44800 ST HERBLAIN")
+        );
+        assert_eq!(
+            to_rib("tests/fixtures/rib/lcl.txt").account_holder_address(),
+            None
         );
     }
 
