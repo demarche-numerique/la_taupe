@@ -116,12 +116,16 @@ fn parse_page_size(info: &str, page: &str) -> Option<(f32, f32)> {
 
 /// Rasterise une seule page d'un PDF, à 150 dpi sauf pour une page démesurée — voir
 /// [`MAX_RASTER_SIDE`].
+///
+/// En PPM, la sortie par défaut de `pdftoppm` : les mêmes pixels qu'en PNG, sans la
+/// compression, qui coûtait cinq fois la rastérisation elle-même — 0,9 s contre 0,16 s
+/// pour une page A4 — pour une image décodée aussitôt.
 pub fn pdf_page_to_img_bytes(file: Vec<u8>, page: u32) -> Vec<u8> {
     crate::timing::measure(crate::timing::poppler, || {
         let dpi = raster_dpi(page_size_pts(&file, page)).to_string();
         let page = page.to_string();
         let mut child = Command::new("pdftoppm")
-            .args(["-png", "-singlefile", "-r", &dpi, "-f", &page, "-l", &page])
+            .args(["-singlefile", "-r", &dpi, "-f", &page, "-l", &page])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -246,8 +250,8 @@ page   num  type   width height color comp bpc  enc interp  object ID x-ppi y-pp
     #[test]
     fn a_page_declared_at_72_ppi_stays_under_the_ceiling() {
         let pdf = std::fs::read("tests/fixtures/rib/image_declared_72ppi.pdf").unwrap();
-        let png = pdf_page_to_img_bytes(pdf, 1);
-        let img = image::load_from_memory(&png).unwrap();
+        let ppm = pdf_page_to_img_bytes(pdf, 1);
+        let img = image::load_from_memory(&ppm).unwrap();
 
         assert!(img.width().max(img.height()) <= 3000);
     }
