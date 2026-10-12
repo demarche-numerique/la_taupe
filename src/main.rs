@@ -1,6 +1,7 @@
 use la_taupe::{
     analysis::{rib_analysis_traced, Analysis, Hint, Type},
     http::server,
+    text::holder_parts::split_holder,
     twoddoc::trust_service,
 };
 use serde_json::json;
@@ -23,7 +24,15 @@ fn main() {
         println!("        without it both analyses run.");
         println!("        --trace (with --type rib) adds what the pipeline did: route, engine,");
         println!("        candidate holder blocks with their place and outcome; never text.");
+        println!("la_taupe --split-holder reads holders on stdin, one per line with | between");
+        println!("        the lines of the block, and prints their name and address, one JSON");
+        println!("        line each: what the analysis does to the holder it reads.");
         println!("la_taupe to start the server");
+        std::process::exit(0);
+    }
+
+    if args.contains(&String::from("--split-holder")) {
+        split_holders();
         std::process::exit(0);
     }
 
@@ -117,6 +126,15 @@ fn analyze_batch(args: &[String]) {
             });
         }
     });
+}
+
+/// Name and address of holders given as text: the split applied to a known holder (an
+/// annotated truth), so that it can be measured apart from the reading.
+fn split_holders() {
+    for line in std::io::stdin().lines().map_while(Result::ok) {
+        let (name, address) = split_holder(&line.replace('|', "\n"));
+        println!("{}", json!({"name": name, "address": address}));
+    }
 }
 
 /// A RIB analysis, with the trace of what the pipeline did.
