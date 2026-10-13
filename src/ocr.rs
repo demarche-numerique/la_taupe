@@ -755,6 +755,7 @@ fn find_account_holder(
 
     // chaque titulaire recevable, avec l'indice de son bloc dans la trace
     let mut account_holders: Vec<(String, usize)> = Vec::new();
+    let mut designated_above: Vec<(usize, &Anchor, u32)> = Vec::new();
     for (index, anchor, score) in ranked {
         provenance.holder_blocks_read += 1;
         // le code postal ferme un bloc d'adresse désigné : on relit ce bloc, borné par
@@ -839,17 +840,15 @@ fn find_account_holder(
                         BlockOutcome::Trimmed,
                     )
                 }
-            } else if let Some(top) =
-                designation_above(&segments, anchor, &holder_label, &code_postal_line_regex)
-            {
-                let mask = above_mask(anchor, top);
-                let above = read_mask(index, mask, "above_mask");
-                if domiciliation.is_match(&above) && !holder_label.is_match(&above) {
-                    (None, mask, BlockOutcome::Domiciliation)
-                } else {
-                    (Some(above), mask, BlockOutcome::Trimmed)
-                }
             } else {
+                // désigné plus haut que le masque : relu seulement si aucun autre code
+                // postal ne donne le titulaire — une lecture de plus, sinon, sur chaque
+                // bloc écarté de la page
+                if let Some(top) =
+                    designation_above(&segments, anchor, &holder_label, &code_postal_line_regex)
+                {
+                    designated_above.push((index, anchor, top));
+                }
                 (None, addr_mask, BlockOutcome::NotDesignated)
             }
         };
@@ -870,6 +869,34 @@ fn find_account_holder(
                 }
             }
             None => provenance.holder_blocks.push(block(mask, refusal)),
+        }
+    }
+    // Aucun code postal n'a donné de titulaire : ceux dont la désignation est restée
+    // au-dessus du masque sont relus, remontés jusqu'à elle.
+    if account_holders.is_empty() {
+        for (index, anchor, top) in designated_above {
+            let mask = above_mask(anchor, top);
+            let text = read_mask(index, mask, "above_mask");
+            if domiciliation.is_match(&text) && !holder_label.is_match(&text) {
+                provenance
+                    .holder_blocks
+                    .push(block(mask, BlockOutcome::Domiciliation));
+                continue;
+            }
+            match trim_holder(&text, &code_postal_line_regex)
+                .map(|h| respace_from_page(&complete_cut_words(&h, &page_lines), &page_lines))
+            {
+                Some(holder) => {
+                    account_holders.push((holder, provenance.holder_blocks.len()));
+                    provenance
+                        .holder_blocks
+                        .push(block(mask, BlockOutcome::Outranked));
+                    break;
+                }
+                None => provenance
+                    .holder_blocks
+                    .push(block(mask, BlockOutcome::Trimmed)),
+            }
         }
     }
     // à plusieurs candidats, celui qui porte un libellé de titulaire l'emporte
