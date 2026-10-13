@@ -91,13 +91,14 @@ struct Patterns {
 /// compte à la Banque de France (« TRESORERIE DE … », « Service de gestion comptable
 /// de … ») : rien d'autre ne désigne ce bloc, et l'OCR le rend aussi en minuscules. Sur
 /// un scan, « TRESORERIE » sort déformé (« TRESORBRE ») : son début suffit, à condition
-/// qu'il soit suivi de lettres — « TRESOR PUBLIC » est une domiciliation.
+/// qu'il soit suivi de lettres — « TRESOR PUBLIC » est une domiciliation. La direction
+/// des finances publiques n'en est pas : sur un RIB du Trésor public, elle tient le
+/// compte et s'imprime à la place de l'agence.
 pub const LEGAL_FORM: &str = concat!(
     r"ASSOCIATION|ASSOC\.?|ASS|SASU|SAS|SARL|EURL|SCI|SCP|SELARL|EARL|GAEC|SCEA|SNC|GIE|SCOP|FONDATION",
     r"|G\.A\.E\.C\.?|E\.A\.R\.L\.?|S\.A\.S\.U\.?|S\.A\.S\.?|S\.A\.R\.L\.?|E\.U\.R\.L\.?|S\.C\.E\.A\.?",
     r"|S\.C\.I\.?|S\.C\.P\.?|S\.N\.C\.?",
-    r"|(?i:service de gestion comptable|sgc|tr[ée]sor[[:alpha:]]{3,}|paierie",
-    r"|direction (?:r[ée]gionale|d[ée]partementale) des finances publiques|drfip|ddfip)",
+    r"|(?i:service de gestion comptable|sgc|tr[ée]sor[[:alpha:]]{3,}|paierie)",
 );
 
 impl Patterns {
@@ -433,7 +434,10 @@ mod tests {
     /// désignent le titulaire, comme une forme juridique.
     #[test]
     fn a_dotted_legal_form_or_a_public_accountant_heads_a_holder() {
-        for head in ["G.A.E.C. DU PRE FLEURI", "Service de Gestion comptable de Val-Fleuri"] {
+        for head in [
+            "G.A.E.C. DU PRE FLEURI",
+            "Service de Gestion comptable de Val-Fleuri",
+        ] {
             let page = vec![
                 seg(head, 100, 100, 500),
                 seg("12 RUE DES GRIVES", 100, 130, 400),

@@ -1626,10 +1626,11 @@ mod tests {
         // déformée par l'OCR d'un scan, elle se reconnaît à son début
         assert!(match_civilite("TRESORBRIE\nDE VAL-FLEURI"));
         assert!(!match_civilite("TRESOR PUBLIC VAL-FLEURI"));
-        assert!(match_civilite(
-            "DIRECTION DEPARTEMENTALE DES FINANCES PUBLIQUES DU VAL-FLEURI"
-        ));
         assert!(match_civilite("PAIERIE DEPARTEMENTALE DU VAL-FLEURI"));
+        // le teneur d'un compte du Trésor public, à la place de l'agence
+        assert!(!match_civilite(
+            "Direction Régionale des Finances Publiques"
+        ));
         // un sigle plus long n'est pas un service de gestion comptable
         assert!(!match_civilite("SGCB AGENCE DU PORT"));
     }
