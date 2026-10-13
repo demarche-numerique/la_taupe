@@ -5,7 +5,7 @@ use log::trace;
 use regex::Regex;
 
 use crate::{
-    address_blocks::{address_blocks, read_rect, segments},
+    address_blocks::{address_blocks, read_rect, segments, LEGAL_FORM},
     gutters::column_span,
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
     lines::{extract_anchors, max_line_height, TextLine},
@@ -376,12 +376,9 @@ fn find_civilite(s: &str) -> Option<usize> {
     let prenom_nom_ou =
         Regex::new(r"[[:upper:]]+ +[[:upper:]]+ +OU +[[:upper:]]+ +[[:upper:]]+").unwrap();
     // Une personne morale n'a pas de civilité : sa forme juridique en tête de ligne joue
-    // le même rôle — « ASSOC. LES AMIS DE… », « SARL LES FAUVES ». En majuscules
-    // seulement, et sans « SA » : trop court pour ne pas surgir au milieu d'un mot lu.
-    let legal_form = Regex::new(
-        r"(?m)^\s*(ASSOCIATION|ASSOC\.?|ASS|SASU|SAS|SARL|S\.A\.R\.L\.|EURL|SCI|SCP|SELARL|EARL|GAEC|SCEA|SNC|GIE|SCOP|FONDATION)\s",
-    )
-    .unwrap();
+    // le même rôle — « ASSOC. LES AMIS DE… », « SARL LES FAUVES » —, comme le comptable
+    // public d'une collectivité.
+    let legal_form = Regex::new(&format!(r"(?m)^\s*({LEGAL_FORM})\s")).unwrap();
 
     civilite
         .find(s)
@@ -1600,5 +1597,37 @@ mod tests {
         // en minuscules ou au milieu d'une ligne, ce n'est pas une forme juridique
         assert!(!match_civilite("la classe de 2nde"));
         assert!(!match_civilite("CODE BANQUE SAS 12345"));
+    }
+
+    /// Le sigle à points vaut la forme juridique : « G.A.E.C. » comme « GAEC ».
+    #[test]
+    fn a_dotted_legal_form_anchors_a_company_holder() {
+        let text = "Intitulé du compte\nG.A.E.C. DU PRE FLEURI\nLIEU-DIT LES GRIVES\n44100 NANTES";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("G.A.E.C. DU PRE FLEURI\nLIEU-DIT LES GRIVES\n44100 NANTES")
+        );
+        assert!(match_civilite("E.A.R.L. LES VERGERS BLEUS"));
+        assert!(match_civilite("S.A.S LES FAUVES - ATELIER"));
+        assert!(!match_civilite("CODE BANQUE S.A.S. 12345"));
+    }
+
+    /// Le compte d'une collectivité est tenu par son comptable public : c'est lui le
+    /// titulaire imprimé, sans civilité ni forme juridique.
+    #[test]
+    fn a_public_accountant_anchors_the_holder() {
+        let text = "Banque de France\nTRESORERIE DE VAL-FLEURI\n12 RUE DES GRIVES\n44100 NANTES";
+        assert_eq!(
+            trim_holder(text, &postal_code()).as_deref(),
+            Some("TRESORERIE DE VAL-FLEURI\n12 RUE DES GRIVES\n44100 NANTES")
+        );
+        assert!(match_civilite("Service de Gestion comptable de Val-Fleuri"));
+        assert!(match_civilite("Trésorerie De Val-Fleuri"));
+        assert!(match_civilite(
+            "DIRECTION DEPARTEMENTALE DES FINANCES PUBLIQUES DU VAL-FLEURI"
+        ));
+        assert!(match_civilite("PAIERIE DEPARTEMENTALE DU VAL-FLEURI"));
+        // un sigle plus long n'est pas un service de gestion comptable
+        assert!(!match_civilite("SGCB AGENCE DU PORT"));
     }
 }
