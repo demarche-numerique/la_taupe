@@ -84,6 +84,23 @@ struct Patterns {
     domiciliation: Regex,
 }
 
+/// Ce qui ouvre, en tête de ligne, le titulaire d'une personne morale à la place d'une
+/// civilité. D'abord sa forme juridique, sigle à points compris (« G.A.E.C. »,
+/// « E.A.R.L. »), en majuscules seulement et sans « SA », trop court pour ne pas surgir au
+/// milieu d'un mot lu. Ensuite, pour une collectivité, le comptable public qui tient son
+/// compte à la Banque de France (« TRESORERIE DE … », « Service de gestion comptable
+/// de … ») : rien d'autre ne désigne ce bloc, et l'OCR le rend aussi en minuscules. Sur
+/// un scan, « TRESORERIE » sort déformé (« TRESORBRE ») : son début suffit, à condition
+/// qu'il soit suivi de lettres — « TRESOR PUBLIC » est une domiciliation. La direction
+/// des finances publiques n'en est pas : sur un RIB du Trésor public, elle tient le
+/// compte et s'imprime à la place de l'agence.
+pub const LEGAL_FORM: &str = concat!(
+    r"ASSOCIATION|ASSOC\.?|ASS|SASU|SAS|SARL|EURL|SCI|SCP|SELARL|EARL|GAEC|SCEA|SNC|GIE|SCOP|FONDATION",
+    r"|G\.A\.E\.C\.?|E\.A\.R\.L\.?|S\.A\.S\.U\.?|S\.A\.S\.?|S\.A\.R\.L\.?|E\.U\.R\.L\.?|S\.C\.E\.A\.?",
+    r"|S\.C\.I\.?|S\.C\.P\.?|S\.N\.C\.?",
+    r"|(?i:service de gestion comptable|sgc|tr[ée]sor[[:alpha:]]{3,}|paierie)",
+);
+
 impl Patterns {
     fn new() -> Self {
         Self {
@@ -97,11 +114,7 @@ impl Patterns {
                 r"(?i)^\s*((m|mr|monsieur)\.?\s*ou\s+)?(m|mr|monsieur|mme|madame|mlle|mle|melle|mademoiselle)(\.\s*|\s+)[[:alpha:]]{2,}",
             )
             .unwrap(),
-            // en majuscules seulement, comme au chemin du recadrage
-            legal_form: Regex::new(
-                r"^\s*(ASSOCIATION|ASSOC\.?|ASS|SASU|SAS|SARL|S\.A\.R\.L\.|EURL|SCI|SCP|SELARL|EARL|GAEC|SCEA|SNC|GIE|SCOP|FONDATION)\s",
-            )
-            .unwrap(),
+            legal_form: Regex::new(&format!(r"^\s*({LEGAL_FORM})\s")).unwrap(),
             couple: Regex::new(r"^\s*[[:upper:]]+ +[[:upper:]]+ +OU +[[:upper:]]+ +[[:upper:]]+")
                 .unwrap(),
             label: Regex::new(r"(?i)(titulaire|intitul[ée]|account owner|b[ée]n[ée]ficiaire)")
@@ -415,6 +428,27 @@ mod tests {
 
         let agency = blocks.iter().find(|b| b.members.contains(&2)).unwrap();
         assert!(agency.domiciliation);
+    }
+
+    /// Sans civilité ni libellé, un sigle à points ou un comptable public en tête
+    /// désignent le titulaire, comme une forme juridique.
+    #[test]
+    fn a_dotted_legal_form_or_a_public_accountant_heads_a_holder() {
+        for head in [
+            "G.A.E.C. DU PRE FLEURI",
+            "Service de Gestion comptable de Val-Fleuri",
+        ] {
+            let page = vec![
+                seg(head, 100, 100, 500),
+                seg("12 RUE DES GRIVES", 100, 130, 400),
+                seg("44100 NANTES", 100, 160, 300),
+            ];
+            let blocks = address_blocks(&page);
+
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].members, vec![2, 1, 0]);
+            assert!(blocks[0].is_holder_like(), "{head}");
+        }
     }
 
     /// Un code postal plus haut appartient à un autre bloc : la croissance s'y arrête ;
