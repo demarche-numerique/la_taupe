@@ -1582,8 +1582,8 @@ mod tests {
         };
         let page = vec![
             seg("Nom et adresse du titulaire", 290),
-            seg("G.A.E.C. DU PRE FLEURI", 320),
-            seg("LIEU-DIT LES GRIVES", 410),
+            seg("G.A.E.C. MATISSE ET KAHLO", 320),
+            seg("LIEU-DIT LES NYMPHEAS", 410),
             seg("44100 NANTES", 500),
         ];
         assert_eq!(
@@ -1594,7 +1594,7 @@ mod tests {
         assert_eq!((y, y + height), (310, 530));
 
         // un nom sans forme juridique : le libellé au-dessus désigne le bloc
-        let unprefixed = vec![seg("Intitulé du compte", 290), seg("LES FAUVES", 320)];
+        let unprefixed = vec![seg("Intitulé du compte", 290), seg("MATISSE ET KAHLO", 320)];
         assert_eq!(
             designation_above(&unprefixed, &postal, &label, &postal_line),
             Some(290)
@@ -1660,10 +1660,10 @@ mod tests {
     /// font pas partie du titulaire ; ses vraies lignes restent.
     #[test]
     fn labels_and_noise_are_dropped_from_the_block() {
-        let text = "Titulaire du compte\n(Account Owner)\nASSOC. LES AMIS DE CEZANNE\nADRESSE :\n12 RUE DES GRIVES\n44100 NANTES";
+        let text = "Titulaire du compte\n(Account Owner)\nASSOC. LES AMIS DE CEZANNE\nADRESSE :\n12 RUE DES NYMPHEAS\n44100 NANTES";
         assert_eq!(
             trim_holder(text, &postal_code()).as_deref(),
-            Some("ASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES")
+            Some("ASSOC. LES AMIS DE CEZANNE\n12 RUE DES NYMPHEAS\n44100 NANTES")
         );
 
         assert!(is_label_or_noise("2===============k=========k==m====="));
@@ -1706,10 +1706,10 @@ mod tests {
     #[test]
     fn a_legal_form_anchors_a_company_holder() {
         let text =
-            "Intitulé du compte\nASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES";
+            "Intitulé du compte\nASSOC. LES AMIS DE CEZANNE\n12 RUE DES NYMPHEAS\n44100 NANTES";
         assert_eq!(
             trim_holder(text, &postal_code()).as_deref(),
-            Some("ASSOC. LES AMIS DE CEZANNE\n12 RUE DES GRIVES\n44100 NANTES")
+            Some("ASSOC. LES AMIS DE CEZANNE\n12 RUE DES NYMPHEAS\n44100 NANTES")
         );
         assert!(match_civilite("SARL LES FAUVES"));
         // en minuscules ou au milieu d'une ligne, ce n'est pas une forme juridique
@@ -1720,13 +1720,14 @@ mod tests {
     /// Le sigle à points vaut la forme juridique : « G.A.E.C. » comme « GAEC ».
     #[test]
     fn a_dotted_legal_form_anchors_a_company_holder() {
-        let text = "Intitulé du compte\nG.A.E.C. DU PRE FLEURI\nLIEU-DIT LES GRIVES\n44100 NANTES";
+        let text =
+            "Intitulé du compte\nG.A.E.C. MATISSE ET KAHLO\nLIEU-DIT LES NYMPHEAS\n44100 NANTES";
         assert_eq!(
             trim_holder(text, &postal_code()).as_deref(),
-            Some("G.A.E.C. DU PRE FLEURI\nLIEU-DIT LES GRIVES\n44100 NANTES")
+            Some("G.A.E.C. MATISSE ET KAHLO\nLIEU-DIT LES NYMPHEAS\n44100 NANTES")
         );
-        assert!(match_civilite("E.A.R.L. LES VERGERS BLEUS"));
-        assert!(match_civilite("S.A.S LES FAUVES - ATELIER"));
+        assert!(match_civilite("E.A.R.L. MONET ET CEZANNE"));
+        assert!(match_civilite("S.A.S MATISSE - ATELIER KAHLO"));
         assert!(!match_civilite("CODE BANQUE S.A.S. 12345"));
     }
 
@@ -1734,17 +1735,21 @@ mod tests {
     /// titulaire imprimé, sans civilité ni forme juridique.
     #[test]
     fn a_public_accountant_anchors_the_holder() {
-        let text = "Banque de France\nTRESORERIE DE VAL-FLEURI\n12 RUE DES GRIVES\n44100 NANTES";
+        let text = "Banque de France\nTRESORERIE DE GIVERNY-LES-NYMPHEAS\n12 RUE DES NYMPHEAS\n44100 NANTES";
         assert_eq!(
             trim_holder(text, &postal_code()).as_deref(),
-            Some("TRESORERIE DE VAL-FLEURI\n12 RUE DES GRIVES\n44100 NANTES")
+            Some("TRESORERIE DE GIVERNY-LES-NYMPHEAS\n12 RUE DES NYMPHEAS\n44100 NANTES")
         );
-        assert!(match_civilite("Service de Gestion comptable de Val-Fleuri"));
-        assert!(match_civilite("Trésorerie De Val-Fleuri"));
+        assert!(match_civilite(
+            "Service de Gestion comptable de Giverny-les-Nympheas"
+        ));
+        assert!(match_civilite("Trésorerie De Giverny-les-Nympheas"));
         // déformée par l'OCR d'un scan, elle se reconnaît à son début
-        assert!(match_civilite("TRESORBRIE\nDE VAL-FLEURI"));
-        assert!(!match_civilite("TRESOR PUBLIC VAL-FLEURI"));
-        assert!(match_civilite("PAIERIE DEPARTEMENTALE DU VAL-FLEURI"));
+        assert!(match_civilite("TRESORBRIE\nDE GIVERNY-LES-NYMPHEAS"));
+        assert!(!match_civilite("TRESOR PUBLIC GIVERNY-LES-NYMPHEAS"));
+        assert!(match_civilite(
+            "PAIERIE DEPARTEMENTALE DU GIVERNY-LES-NYMPHEAS"
+        ));
         // le teneur d'un compte du Trésor public, à la place de l'agence
         assert!(!match_civilite(
             "Direction Régionale des Finances Publiques"
