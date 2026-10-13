@@ -435,12 +435,12 @@ mod tests {
     #[test]
     fn a_dotted_legal_form_or_a_public_accountant_heads_a_holder() {
         for head in [
-            "G.A.E.C. DU PRE FLEURI",
-            "Service de Gestion comptable de Val-Fleuri",
+            "G.A.E.C. MATISSE ET KAHLO",
+            "Service de Gestion comptable de Giverny-les-Nympheas",
         ] {
             let page = vec![
                 seg(head, 100, 100, 500),
-                seg("12 RUE DES GRIVES", 100, 130, 400),
+                seg("12 RUE DES NYMPHEAS", 100, 130, 400),
                 seg("44100 NANTES", 100, 160, 300),
             ];
             let blocks = address_blocks(&page);
