@@ -89,12 +89,14 @@ struct Patterns {
 /// « E.A.R.L. »), en majuscules seulement et sans « SA », trop court pour ne pas surgir au
 /// milieu d'un mot lu. Ensuite, pour une collectivité, le comptable public qui tient son
 /// compte à la Banque de France (« TRESORERIE DE … », « Service de gestion comptable
-/// de … ») : rien d'autre ne désigne ce bloc, et l'OCR le rend aussi en minuscules.
+/// de … ») : rien d'autre ne désigne ce bloc, et l'OCR le rend aussi en minuscules. Sur
+/// un scan, « TRESORERIE » sort déformé (« TRESORBRE ») : son début suffit, à condition
+/// qu'il soit suivi de lettres — « TRESOR PUBLIC » est une domiciliation.
 pub const LEGAL_FORM: &str = concat!(
     r"ASSOCIATION|ASSOC\.?|ASS|SASU|SAS|SARL|EURL|SCI|SCP|SELARL|EARL|GAEC|SCEA|SNC|GIE|SCOP|FONDATION",
     r"|G\.A\.E\.C\.?|E\.A\.R\.L\.?|S\.A\.S\.U\.?|S\.A\.S\.?|S\.A\.R\.L\.?|E\.U\.R\.L\.?|S\.C\.E\.A\.?",
     r"|S\.C\.I\.?|S\.C\.P\.?|S\.N\.C\.?",
-    r"|(?i:service de gestion comptable|sgc|tr[ée]sorerie|paierie",
+    r"|(?i:service de gestion comptable|sgc|tr[ée]sor[[:alpha:]]{3,}|paierie",
     r"|direction (?:r[ée]gionale|d[ée]partementale) des finances publiques|drfip|ddfip)",
 );
 

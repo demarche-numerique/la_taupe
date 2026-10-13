@@ -1623,6 +1623,9 @@ mod tests {
         );
         assert!(match_civilite("Service de Gestion comptable de Val-Fleuri"));
         assert!(match_civilite("Trésorerie De Val-Fleuri"));
+        // déformée par l'OCR d'un scan, elle se reconnaît à son début
+        assert!(match_civilite("TRESORBRIE\nDE VAL-FLEURI"));
+        assert!(!match_civilite("TRESOR PUBLIC VAL-FLEURI"));
         assert!(match_civilite(
             "DIRECTION DEPARTEMENTALE DES FINANCES PUBLIQUES DU VAL-FLEURI"
         ));
