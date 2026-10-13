@@ -5,7 +5,7 @@ use log::trace;
 use regex::Regex;
 
 use crate::{
-    address_blocks::{address_blocks, read_rect, segments, LEGAL_FORM},
+    address_blocks::{address_blocks, read_rect, segments, Segment, LEGAL_FORM},
     gutters::column_span,
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
     lines::{extract_anchors, max_line_height, TextLine},
@@ -264,6 +264,44 @@ fn side_mask(anchor: &Anchor, (label_top, label_right): (u32, u32)) -> (u32, u32
         right.saturating_sub(x).max(1),
         bottom.saturating_sub(y).max(1),
     )
+}
+
+/// Haut de la ligne qui désigne le titulaire — civilité, forme juridique, libellé — posée
+/// au-dessus du masque d'un code postal, dans sa largeur. Le masque ne monte que d'une
+/// hauteur fixe : des lignes blanches entre le nom et l'adresse (« Nom et adresse du
+/// titulaire / G.A.E.C. … / (vide) / rue / (vide) / code postal ») laissent hors champ
+/// tout ce qui désignait le bloc, et il était écarté. On cherche jusqu'à six lignes plus
+/// haut, la plus proche d'abord ; une autre ligne de code postal arrête la recherche :
+/// au-delà, c'est un autre bloc.
+fn designation_above(
+    segments: &[Segment],
+    anchor: &Anchor,
+    holder_label: &Regex,
+    postal_line: &Regex,
+) -> Option<u32> {
+    let (x, top, width, _) = anchor.addr_mask();
+    let (left, right, top) = (x as i32, (x + width) as i32, top as i32);
+    let reach = 6 * anchor.height as i32;
+
+    let mut above: Vec<&Segment> = segments
+        .iter()
+        .filter(|s| s.x1 > left && s.x0 < right && s.y0 < top && s.y0 >= top - reach)
+        .collect();
+    above.sort_by_key(|s| -s.y0);
+    above
+        .into_iter()
+        .take_while(|s| !postal_line.is_match(&s.text))
+        .find(|s| match_civilite(&s.text) || holder_label.is_match(&s.text))
+        .map(|s| s.y0.max(0) as u32)
+}
+
+/// Le masque d'un code postal remonté jusqu'à la ligne qui le désigne.
+fn above_mask(anchor: &Anchor, designation_top: u32) -> (u32, u32, u32, u32) {
+    let (x, _, width, _) = anchor.addr_mask();
+    let y = designation_top.saturating_sub(anchor.height / 2);
+    let bottom = anchor.bottom_right.y + anchor.height / 2;
+
+    (x, y, width, bottom.saturating_sub(y).max(1))
 }
 
 /// Vrai si la page se lit de haut en bas : la plupart de ses lignes un peu longues sont
@@ -800,6 +838,16 @@ fn find_account_holder(
                         mask,
                         BlockOutcome::Trimmed,
                     )
+                }
+            } else if let Some(top) =
+                designation_above(&segments, anchor, &holder_label, &code_postal_line_regex)
+            {
+                let mask = above_mask(anchor, top);
+                let above = read_mask(index, mask, "above_mask");
+                if domiciliation.is_match(&above) && !holder_label.is_match(&above) {
+                    (None, mask, BlockOutcome::Domiciliation)
+                } else {
+                    (Some(above), mask, BlockOutcome::Trimmed)
                 }
             } else {
                 (None, addr_mask, BlockOutcome::NotDesignated)
@@ -1488,6 +1536,49 @@ mod tests {
         // un libellé à droite du code postal ne compte pas
         let right = vec![line("Titulaire", 300, 1500, 20, 200)];
         assert_eq!(side_label(&right, &postal, &label), None);
+    }
+
+    /// Des lignes blanches entre le nom et l'adresse laissent le nom au-dessus du masque
+    /// du code postal : la ligne qui désigne le bloc, la plus proche, en donne le haut.
+    #[test]
+    fn a_designation_above_the_mask_is_found() {
+        let label = Regex::new(r"(?i)(titulaire|intitul[ée])").unwrap();
+        let postal_line = postal_code();
+        // code postal à x = 1000, y = 500, lignes de 20 px : le masque monte jusqu'à 350
+        let postal = Anchor::new(Point::new(1000, 500), Point::new(1100, 520));
+        let seg = |text: &str, y0: i32| Segment {
+            x0: 1000,
+            y0,
+            x1: 1400,
+            y1: y0 + 20,
+            text: text.to_string(),
+        };
+        let page = vec![
+            seg("Nom et adresse du titulaire", 290),
+            seg("G.A.E.C. DU PRE FLEURI", 320),
+            seg("LIEU-DIT LES GRIVES", 410),
+            seg("44100 NANTES", 500),
+        ];
+        assert_eq!(
+            designation_above(&page, &postal, &label, &postal_line),
+            Some(320)
+        );
+        let (_, y, _, height) = above_mask(&postal, 320);
+        assert_eq!((y, y + height), (310, 530));
+
+        // un nom sans forme juridique : le libellé au-dessus désigne le bloc
+        let unprefixed = vec![seg("Intitulé du compte", 290), seg("LES FAUVES", 320)];
+        assert_eq!(
+            designation_above(&unprefixed, &postal, &label, &postal_line),
+            Some(290)
+        );
+
+        // un autre code postal entre deux : c'est un autre bloc
+        let other = vec![seg("M MONET CLAUDE", 290), seg("27620 GIVERNY", 320)];
+        assert_eq!(
+            designation_above(&other, &postal, &label, &postal_line),
+            None
+        );
     }
 
     /// Une page lue de haut en bas a des lignes plus hautes que larges ; une page droite
