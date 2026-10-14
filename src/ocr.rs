@@ -9,7 +9,10 @@ use crate::{
     gutters::column_span,
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
     lines::{extract_anchors, max_line_height, TextLine},
-    ppocr::{image_to_string, recognize, recognize_anchors, recognize_fine},
+    ppocr::{
+        image_to_string, recognize, recognize_anchors, recognize_at_line_height, DETECTION_SIDE,
+        TARGET_LINE_HEIGHT,
+    },
     provenance::{AnchorSource, BlockOutcome, Engine, HolderBlock, OcrLine, Provenance, TextStats},
     rib::{extract_fr_bic, extract_iban, join_cell_letters, Rib},
     shapes::{Anchor, Point},
@@ -112,6 +115,13 @@ pub fn zoom_and_extract(
         // lus. Toute la cascade est réglée sur les lignes vues à ce côté — y chercher le
         // titulaire sur une lecture plus fine perdait deux fois plus qu'il ne gagnait :
         // elle ne sert qu'en repli, quand la lecture ordinaire n'a rien donné.
+        //
+        // Le repli relit le texte de la page, recadré sur lui, à la taille où la cascade
+        // est réglée : un RIB dans un coin de feuille y est agrandi plus que ne le ferait
+        // une détection fine de toute la page, une page A4 entière n'y est pas lue plus
+        // gros que nécessaire. Une page dont les lignes ont déjà à peu près cette taille
+        // n'est pas relue : elle le serait à l'identique.
+        let page_lines = holder_lines.clone();
         let account_holder = zoom_and_extract_account_holder_traced(
             &holder_img,
             holder_lines,
@@ -120,10 +130,21 @@ pub fn zoom_and_extract(
             Some(holder_turn),
         )
         .or_else(|| {
+            const MIN_GAIN: f32 = 1.3;
+            let (rect, line_height) = text_frame(&holder_img, &page_lines)?;
+            if TARGET_LINE_HEIGHT < MIN_GAIN * at_detection(&holder_img, line_height) {
+                return None;
+            }
             provenance.fine_lines = true;
+            provenance.content_crop = page_rect(&holder_img, rect, Some(holder_turn));
+            let cropped = holder_img.crop_imm(rect.0, rect.1, rect.2, rect.3);
+            let lines = recognize_at_line_height(&cropped, line_height)
+                .iter()
+                .map(|l| l.placed(1.0, rect.0 as i32, rect.1 as i32))
+                .collect();
             zoom_and_extract_account_holder_traced(
                 &holder_img,
-                recognize_fine(&holder_img),
+                lines,
                 name,
                 provenance,
                 Some(holder_turn),
@@ -240,6 +261,43 @@ pub fn zoom_and_extract(
     }
 
     None
+}
+
+/// Le texte lu : son rectangle, marge comprise, et la hauteur médiane de ses lignes, en
+/// pixels de l'image. Les détections d'un ou deux caractères — une poussière, un filet —
+/// ne comptent pas ; avec moins de cinq lignes pour en juger, le rectangle est la page.
+fn text_frame(img: &DynamicImage, lines: &[TextLine]) -> Option<((u32, u32, u32, u32), f32)> {
+    let rects: Vec<crate::lines::Rect> = lines
+        .iter()
+        .filter(|l| l.to_string().chars().filter(|c| !c.is_whitespace()).count() >= 3)
+        .map(|l| l.bounding_rect())
+        .collect();
+    let mut heights: Vec<i32> = rects.iter().map(|r| r.height()).collect();
+    heights.sort_unstable();
+    let height = *heights.get(heights.len() / 2)?;
+    let page = (0, 0, img.width(), img.height());
+    if rects.len() < 5 {
+        return Some((page, height as f32));
+    }
+
+    // de quoi rattraper les lignes que la lecture réduite a sautées, en bord de RIB
+    let margin = 3 * height.max(1);
+    let left = (rects.iter().map(|r| r.left()).min()? - margin).max(0) as u32;
+    let top = (rects.iter().map(|r| r.top()).min()? - margin).max(0) as u32;
+    let right = ((rects.iter().map(|r| r.right()).max()? + margin).max(0) as u32).min(img.width());
+    let bottom =
+        ((rects.iter().map(|r| r.bottom()).max()? + margin).max(0) as u32).min(img.height());
+    if right <= left || bottom <= top {
+        return Some((page, height as f32));
+    }
+    Some(((left, top, right - left, bottom - top), height as f32))
+}
+
+/// Hauteur en pixels du détecteur ordinaire d'une ligne de `height` pixels de l'image :
+/// la page y est réduite à DETECTION_SIDE, jamais agrandie.
+fn at_detection(img: &DynamicImage, height: f32) -> f32 {
+    let side = img.width().max(img.height()).max(1) as f32;
+    height * (DETECTION_SIDE as f32 / side).min(1.0)
 }
 
 /// Libellé de titulaire posé à gauche du bloc d'un code postal, dans la hauteur de ce
@@ -1552,6 +1610,42 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    /// Un RIB dans le coin d'une feuille A4 : son texte est cadré, marge de trois lignes
+    /// comprise, et ses lignes de 20 px n'en font plus que 5 pour le détecteur ordinaire.
+    #[test]
+    fn the_text_of_a_page_is_framed_with_its_line_height() {
+        let rib = |left: i32, top: i32| -> Vec<TextLine> {
+            (0..6)
+                .map(|i| line("RELEVE D IDENTITE", top + i * 60, left, 20, 900))
+                .collect()
+        };
+
+        let a4 = DynamicImage::new_luma8(2480, 3508);
+        // six lignes de 200 à 520, bord droit à 2299 : l'aide arrondit la largeur des
+        // caractères
+        assert_eq!(
+            text_frame(&a4, &rib(1400, 200)),
+            Some(((1340, 140, 1019, 440), 20.0))
+        );
+        assert!((at_detection(&a4, 20.0) - 5.47).abs() < 0.01);
+
+        // la photo d'un RIB qui remplit l'image : le cadre est rogné à l'image, et le
+        // détecteur ordinaire voit ses lignes à peine réduites
+        let photo = DynamicImage::new_luma8(1100, 500);
+        assert_eq!(
+            text_frame(&photo, &rib(100, 60)),
+            Some(((40, 0, 1019, 440), 20.0))
+        );
+        assert!((at_detection(&photo, 20.0) - 17.45).abs() < 0.01);
+
+        // trop peu de lignes pour cadrer : toute la page
+        assert_eq!(
+            text_frame(&a4, &rib(1400, 200)[..4]),
+            Some(((0, 0, 2480, 3508), 20.0))
+        );
+        assert_eq!(text_frame(&a4, &[]), None);
     }
 
     /// « Intitulé du compte » à gauche, titulaire aligné à droite : le libellé est

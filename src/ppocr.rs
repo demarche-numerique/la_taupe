@@ -69,7 +69,7 @@ fn engine() -> &'static OAROCR {
 
 /// Côté maximal de la page à la détection des lignes : le défaut de PP-OCR, sur lequel
 /// toute la cascade est réglée.
-const DETECTION_SIDE: u32 = 960;
+pub const DETECTION_SIDE: u32 = 960;
 
 fn build(builder: OAROCRBuilder, side: u32) -> OAROCR {
     // les réglages « general » d'oar-ocr, que fixer le côté de détection remplace
@@ -105,11 +105,47 @@ fn fine_engine() -> &'static OAROCR {
     })
 }
 
-/// Reconnaît la page avec une détection plus fine : pour une page dont le texte, réduit
-/// au côté de détection ordinaire, est trop petit pour que ses lignes soient vues.
-pub fn recognize_fine(img: &DynamicImage) -> Vec<TextLine> {
+/// Hauteur de ligne, en pixels du détecteur, sur laquelle la cascade est réglée : la
+/// médiane des titulaires lus sur la campagne 2026-10-06.
+pub const TARGET_LINE_HEIGHT: f32 = 20.0;
+
+/// Reconnaît une image dont les lignes font `line_height` pixels en les amenant, pour le
+/// détecteur, au plus près de TARGET_LINE_HEIGHT : pour un texte que la réduction au
+/// côté ordinaire rend trop petit pour que ses lignes soient vues. Les lignes sont
+/// rendues dans les coordonnées de l'image.
+///
+/// Le détecteur réduit l'image à son côté, il ne l'agrandit jamais. Un texte qu'il faut
+/// agrandir l'est donc avant lui — jusqu'au côté fin, pour borner le coût ; la
+/// reconnaissance, qui ramène chaque ligne à une hauteur fixe, n'y gagne ni n'y perd. Un
+/// texte qu'il faut réduire l'est par le moteur dont le côté s'en approche le plus : la
+/// reconnaissance découpe alors ses lignes dans l'image à pleine résolution.
+pub fn recognize_at_line_height(img: &DynamicImage, line_height: f32) -> Vec<TextLine> {
+    let side = img.width().max(img.height()).max(1) as f32;
+    let wanted = TARGET_LINE_HEIGHT / line_height.max(1.0);
     crate::timing::measure(crate::timing::ocr, || {
-        recognize_with_engine(fine_engine(), img)
+        if wanted > 1.0 {
+            let scale = wanted.min(FINE_DETECTION_SIDE as f32 / side).max(1.0);
+            let resized = img.resize_exact(
+                (img.width() as f32 * scale).round() as u32,
+                (img.height() as f32 * scale).round() as u32,
+                image::imageops::FilterType::CatmullRom,
+            );
+            let engine = if side * scale <= DETECTION_SIDE as f32 {
+                engine()
+            } else {
+                fine_engine()
+            };
+            return recognize_with_engine(engine, &resized)
+                .iter()
+                .map(|l| l.placed(1.0 / scale, 0, 0))
+                .collect();
+        }
+        let off = |s: u32| ((s as f32 / side).min(1.0) / wanted).ln().abs();
+        if off(DETECTION_SIDE) <= off(FINE_DETECTION_SIDE) {
+            recognize_with_engine(engine(), img)
+        } else {
+            recognize_with_engine(fine_engine(), img)
+        }
     })
 }
 

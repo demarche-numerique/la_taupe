@@ -88,6 +88,26 @@ impl TextLine {
         bounding_rect(&self.chars)
     }
 
+    /// La même ligne, mise à l'échelle `scale` puis décalée de `dx`, `dy` : une ligne lue
+    /// sur un recadrage agrandi, ramenée à l'image d'où il est tiré.
+    pub fn placed(&self, scale: f32, dx: i32, dy: i32) -> TextLine {
+        let at = |v: i32| (v as f32 * scale).round() as i32;
+        let chars = self
+            .chars
+            .iter()
+            .map(|c| TextChar {
+                char: c.char,
+                rect: Rect::from_tlhw(
+                    at(c.rect.top) + dy,
+                    at(c.rect.left) + dx,
+                    at(c.rect.height).max(1),
+                    at(c.rect.width).max(1),
+                ),
+            })
+            .collect();
+        TextLine { chars }
+    }
+
     /// Les mots de la ligne, découpés aux espaces.
     pub fn words(&self) -> impl Iterator<Item = TextWord<'_>> {
         self.chars

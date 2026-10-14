@@ -189,8 +189,11 @@ pub struct Provenance {
     pub ocr_lines: Vec<OcrLine>,
     /// Page du PDF rastérisée pour l'OCR (1 pour une image).
     pub page: Option<u32>,
-    /// Vrai si le titulaire a été cherché dans une lecture à détection plus fine.
+    /// Vrai si le titulaire a été cherché dans une relecture du texte à la taille visée.
     pub fine_lines: bool,
+    /// Le recadrage de la page sur son texte, quand le titulaire y a été cherché, en
+    /// fractions de la page.
+    pub content_crop: Option<[f32; 4]>,
 }
 
 impl TextStats {
@@ -336,6 +339,9 @@ impl Provenance {
             "page": self.page,
             "second_pass": self.second_pass,
             "fine_lines": self.fine_lines,
+            "content_crop": self
+                .content_crop
+                .map(|r| r.map(|v| (f64::from(v) * 1e4).round() / 1e4)),
             "postal_anchors": self.postal_anchors,
             "holder_candidates": self.holder_candidates,
             "holder_blocks_read": self.holder_blocks_read,
