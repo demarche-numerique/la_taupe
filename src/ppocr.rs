@@ -63,10 +63,53 @@ fn engine() -> &'static OAROCR {
             Err(_) => OAROCRBuilder::new(DET_MODEL, REC_MODEL, dict_path()),
         };
 
-        builder
-            .return_word_box(true)
-            .build()
-            .expect("moteur PP-OCR : modèles invalides ou ONNX Runtime absent")
+        build(builder, DETECTION_SIDE)
+    })
+}
+
+/// Côté maximal de la page à la détection des lignes : le défaut de PP-OCR, sur lequel
+/// toute la cascade est réglée.
+const DETECTION_SIDE: u32 = 960;
+
+fn build(builder: OAROCRBuilder, side: u32) -> OAROCR {
+    // les réglages « general » d'oar-ocr, que fixer le côté de détection remplace
+    let detection = oar_ocr::domain::tasks::TextDetectionConfig {
+        score_threshold: 0.3,
+        box_threshold: 0.6,
+        unclip_ratio: 2.0,
+        max_candidates: 1000,
+        limit_side_len: Some(side),
+        limit_type: Some(oar_ocr::processors::LimitType::Max),
+        max_side_len: Some(4000),
+    };
+    builder
+        .text_detection_config(detection)
+        .return_word_box(true)
+        .build()
+        .expect("moteur PP-OCR : modèles invalides ou ONNX Runtime absent")
+}
+
+/// Côté de la détection fine : le double du côté ordinaire. Les lignes du titulaire
+/// manquées à 960 px, de 7 à 12 px d'interligne, y retrouvent les 15 à 25 px des
+/// titulaires lus ; la page nettoyée fait au plus 2400 px.
+const FINE_DETECTION_SIDE: u32 = 1920;
+
+static FINE_ENGINE: OnceLock<OAROCR> = OnceLock::new();
+
+fn fine_engine() -> &'static OAROCR {
+    FINE_ENGINE.get_or_init(|| {
+        build(
+            OAROCRBuilder::new(DET_MODEL, REC_MODEL, dict_path()),
+            FINE_DETECTION_SIDE,
+        )
+    })
+}
+
+/// Reconnaît la page avec une détection plus fine : pour une page dont le texte, réduit
+/// au côté de détection ordinaire, est trop petit pour que ses lignes soient vues.
+pub fn recognize_fine(img: &DynamicImage) -> Vec<TextLine> {
+    crate::timing::measure(crate::timing::ocr, || {
+        recognize_with_engine(fine_engine(), img)
     })
 }
 

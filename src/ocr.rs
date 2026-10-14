@@ -9,7 +9,7 @@ use crate::{
     gutters::column_span,
     image_utils::{clean_image, only_rotate, resize, rotate, rotate_rect, save_image_in_debug},
     lines::{extract_anchors, max_line_height, TextLine},
-    ppocr::{image_to_string, recognize, recognize_anchors},
+    ppocr::{image_to_string, recognize, recognize_anchors, recognize_fine},
     provenance::{AnchorSource, BlockOutcome, Engine, HolderBlock, OcrLine, Provenance, TextStats},
     rib::{extract_fr_bic, extract_iban, join_cell_letters, Rib},
     shapes::{Anchor, Point},
@@ -104,13 +104,31 @@ pub fn zoom_and_extract(
                 Some((image, lines, extra)) => (image, lines, (turn + extra) % 360),
                 None => (img.clone(), text_lines, turn),
             };
+        // Sur une page A4 entière, scannée ou photographiée, un texte en corps courant ne
+        // fait plus qu'une dizaine de pixels d'interligne une fois la page réduite au
+        // côté de détection : le détecteur saute des lignes, souvent celles du titulaire.
+        // Mesuré sur la campagne 2026-10-06 : six titulaires sur sept dont aucun code
+        // postal n'est lu sont sous 13 px, contre 20 px de médiane pour ceux qui sont
+        // lus. Toute la cascade est réglée sur les lignes vues à ce côté — y chercher le
+        // titulaire sur une lecture plus fine perdait deux fois plus qu'il ne gagnait :
+        // elle ne sert qu'en repli, quand la lecture ordinaire n'a rien donné.
         let account_holder = zoom_and_extract_account_holder_traced(
             &holder_img,
             holder_lines,
             name,
             provenance,
             Some(holder_turn),
-        );
+        )
+        .or_else(|| {
+            provenance.fine_lines = true;
+            zoom_and_extract_account_holder_traced(
+                &holder_img,
+                recognize_fine(&holder_img),
+                name,
+                provenance,
+                Some(holder_turn),
+            )
+        });
 
         return Some(Rib::from_iban(iban, account_holder, bic));
     };
