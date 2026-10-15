@@ -7,7 +7,7 @@ use crate::{
     fi_extract::IbanToBankName,
     text::{
         address::find_account_holder_addr, cleanup::clean_holder, communes::fix_holder_city,
-        holder_parts::split_holder, simple_account_holder::find_simple_account_holder,
+        holder_parts::split_holder, simple_account_holder::find_laid_out_account_holder,
     },
 };
 
@@ -48,7 +48,7 @@ impl Rib {
     pub fn parse(text: String) -> Option<Self> {
         let account_holder = find_account_holder_addr(&text)
             .map(|addr| addr.lines().join("\n"))
-            .or_else(|| find_simple_account_holder(&text, 3));
+            .or_else(|| find_laid_out_account_holder(&text));
 
         let iban = extract_iban(&text)?;
         let bic = extract_fr_bic(&text, Some(&iban));

@@ -44,6 +44,16 @@ pub fn communes(code_postal: &str) -> &'static [&'static str] {
     index().get(code_postal).map(Vec::as_slice).unwrap_or(&[])
 }
 
+/// Vrai si `city` est, à la lecture près, une commune desservie par `code_postal`.
+pub fn serves(code_postal: &str, city: &str) -> bool {
+    let city_squashed = squash(city);
+
+    communes(code_postal)
+        .iter()
+        .any(|c| squash(c) == city_squashed)
+        || fix_city_line(&format!("{code_postal} {city}")).is_some()
+}
+
 /// Distance de Levenshtein.
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
@@ -141,10 +151,24 @@ pub fn fix_city_line(line: &str) -> Option<String> {
 
 /// Applique `fix_city_line` à la dernière ligne portant un code postal d'un bloc
 /// titulaire. Les autres lignes ne sont pas touchées.
+///
+/// Un code postal seul sur sa ligne, sa ville en dessous, est d'abord recollé à elle :
+/// sans quoi un code postal à commune unique était complété de sa ville, et la ville
+/// sortait deux fois (« 33800 BORDEAUX » puis « BORDEAUX »).
 pub fn fix_holder_city(holder: &str) -> String {
     let mut lines: Vec<String> = holder.lines().map(str::to_string).collect();
     let has_cp = Regex::new(r"(^|\D)\d{5}").unwrap();
+    let lone_cp = Regex::new(r"^\d{5}$").unwrap();
     if let Some(i) = lines.iter().rposition(|l| has_cp.is_match(l)) {
+        let cp = lines[i].trim().to_string();
+        if lone_cp.is_match(&cp)
+            && lines
+                .get(i + 1)
+                .is_some_and(|town| serves(&cp, town.trim()))
+        {
+            let town = lines.remove(i + 1);
+            lines[i] = format!("{} {}", cp, town.trim());
+        }
         if let Some(fixed) = fix_city_line(&lines[i]) {
             lines[i] = fixed;
         }
@@ -215,5 +239,23 @@ mod tests {
         );
         // sans code postal, rien ne bouge
         assert_eq!(fix_holder_city("M MATISSE HENRI"), "M MATISSE HENRI");
+    }
+
+    /// Le code postal seul, sa ville en dessous : recollés, la ville n'est pas doublée.
+    #[test]
+    fn a_lone_postal_code_is_joined_to_its_town_below() {
+        assert_eq!(
+            fix_holder_city("PAUL CEZANNE\n12 COURS DES PEINTRES\n33800\nBORDEAUX"),
+            "PAUL CEZANNE\n12 COURS DES PEINTRES\n33800 BORDEAUX"
+        );
+        assert_eq!(
+            fix_holder_city("PAUL CEZANNE\n82200\nMoissac\nTarn-et-Garonne"),
+            "PAUL CEZANNE\n82200 Moissac\nTarn-et-Garonne"
+        );
+        // la ligne du dessous n'est pas une commune du code postal : rien n'est recollé
+        assert_eq!(
+            fix_holder_city("PAUL CEZANNE\n82200\nCHEZ MONET"),
+            "PAUL CEZANNE\n82200\nCHEZ MONET"
+        );
     }
 }
