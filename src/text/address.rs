@@ -1,6 +1,9 @@
+use std::sync::OnceLock;
+
 use regex::Regex;
 
-use super::patch::Patch;
+use super::communes::serves;
+use super::patch::{complete, Patch};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum AddrType {
@@ -136,6 +139,9 @@ pub fn find_account_holder_addr(text: &str) -> Option<Addr> {
                         3,
                     )
                 })
+                .chain(town_below(&lines, index).into_iter().map(|(left, right)| {
+                    Patch::extract(&lines, index + 1, &patch_upper_limit, left, right, true, 3)
+                }))
                 .collect::<Vec<Patch>>()
         });
 
@@ -165,6 +171,36 @@ pub fn find_account_holder_addr(text: &str) -> Option<Addr> {
         .cloned();
 
     addr
+}
+
+/// Le code postal seul dans sa cellule, la ville en dessous, dans sa colonne : « 82200 »
+/// puis « Moissac ». Le motif du code postal veut la ville sur sa ligne, et le bloc
+/// n'était pas ancré. Cinq chiffres seuls sont aussi une cellule du tableau RIB : la
+/// ville doit être, au référentiel, une commune de ce code postal. Rend les colonnes de
+/// la ville, d'où le bloc est remonté.
+fn town_below(lines: &[&str], index: usize) -> Vec<(usize, usize)> {
+    // appelée à chaque ligne du document : les motifs ne sont compilés qu'une fois
+    static PATTERNS: OnceLock<(Regex, Regex)> = OnceLock::new();
+    let (lone_postal_code, town) = PATTERNS.get_or_init(|| {
+        (
+            Regex::new(r"(?:^|\s\s)\s*(\d{5})(?:\s\s|\s*$)").unwrap(),
+            Regex::new(r"^[[:alpha:]][[:alpha:] '\-]*$").unwrap(),
+        )
+    });
+    let Some(below) = lines.get(index + 1) else {
+        return vec![];
+    };
+
+    lone_postal_code
+        .captures_iter(lines[index])
+        .filter_map(|c| {
+            let m = c.get(1)?;
+            let start = lines[index][..m.start()].chars().count();
+            let (cell, _, left, right) = complete(below, start, start + 4)?;
+            let cell = cell.trim();
+            (town.is_match(cell) && serves(m.as_str(), cell)).then_some((left, right))
+        })
+        .collect()
 }
 
 fn addr_type_from_text(patch: &Patch) -> AddrType {
@@ -408,6 +444,42 @@ Tresor public                          REGIE DES PEINTRES
                 "34199 MONTPELLIER Cedex5"
             ]))
         );
+    }
+
+    /// Le code postal seul sur sa ligne, la ville en dessous : le bloc est ancré, et la
+    /// domiciliation voisine reste écartée.
+    #[test]
+    fn a_postal_code_alone_above_its_town_anchors_the_block() {
+        let text = "\
+Titulaire du compte                            Domiciliation
+
+PAUL CEZANNE                                   BANQUE DES ARTS, AGENCE DE PARIS
+1 Rue des Peintres                             10 avenue Monet 75116 Paris
+82200                                          France
+Moissac
+Tarn-et-Garonne";
+
+        assert_eq!(
+            find_account_holder_addr(text).map(|a| a.lines()),
+            Some(vec_to_string(vec![
+                "PAUL CEZANNE",
+                "1 Rue des Peintres",
+                "82200",
+                "Moissac"
+            ]))
+        );
+    }
+
+    /// Cinq chiffres seuls au-dessus d'un mot qui n'est pas une de leurs communes : une
+    /// cellule du tableau RIB, pas un code postal.
+    #[test]
+    fn five_digits_above_a_word_that_is_not_their_town_anchor_nothing() {
+        let text = "\
+Code banque   Code guichet
+30001         00064
+Domiciliation BANQUE";
+
+        assert_eq!(find_account_holder_addr(text), None);
     }
 
     #[test]

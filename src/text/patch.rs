@@ -112,7 +112,7 @@ fn column_is_blank(line: &str, left: usize, right: usize) -> bool {
         .all(char::is_whitespace)
 }
 
-fn complete(line: &str, start: usize, end: usize) -> Option<(String, String, usize, usize)> {
+pub fn complete(line: &str, start: usize, end: usize) -> Option<(String, String, usize, usize)> {
     let chars: Vec<char> = line.chars().collect();
     let left = left_complete(line, start, end)?;
     let right = right_complete(line, left, end)?;
