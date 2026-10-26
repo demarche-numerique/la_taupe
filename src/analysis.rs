@@ -94,7 +94,8 @@ pub fn vec_to_rib_traced(
             let img = pdf_to_img_bytes(content);
             Ok(image_bytes_to_rib_traced(img, name, provenance))
         }
-    } else if filetype == "image/png" || filetype == "image/jpeg" {
+    // le TIFF : la sortie de certains scanners de bureau, décodé comme les autres
+    } else if matches!(filetype, "image/png" | "image/jpeg" | "image/tiff") {
         provenance.route = Some(Route::Image);
         provenance.page = Some(1);
 
@@ -195,6 +196,28 @@ mod tests {
             .unwrap()
             .expect("le RIB est lu par OCR");
 
+        assert_eq!(
+            crate::rib::normalize_iban(rib.iban()),
+            "FR7630001000644919009562088"
+        );
+    }
+
+    /// Un RIB fictif scanné en TIFF est lu comme une photo, au lieu d'être refusé
+    /// (« Unsupported file type: image/tiff »).
+    ///
+    /// Demande les modèles PP-OCR, absents de la CI :
+    ///     cargo test --release -- --ignored a_tiff_scan
+    #[test]
+    #[ignore = "demande les modèles PP-OCR (download-models.sh)"]
+    fn a_tiff_scan_is_read_like_a_photo() {
+        let content = std::fs::read("tests/fixtures/rib/rib_tiff.tif").unwrap();
+        let mut provenance = Provenance::default();
+
+        let rib = vec_to_rib_traced(content, "rib_tiff.tif", &mut provenance)
+            .unwrap()
+            .expect("le RIB est lu par OCR");
+
+        assert!(matches!(provenance.route, Some(Route::Image)));
         assert_eq!(
             crate::rib::normalize_iban(rib.iban()),
             "FR7630001000644919009562088"
