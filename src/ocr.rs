@@ -61,21 +61,34 @@ pub fn zoom_and_extract(
     // Page lue de haut en bas sans que l'IBAN y soit lu : toute la suite de la cascade —
     // recadrages autour d'ancres hautes de trois cents pixels — tomberait à côté. On la
     // mène sur la page redressée.
+    //
+    // Page à l'envers — scan posé tête en bas —, lue sans un IBAN ni une ancre d'IBAN :
+    // PP-OCR ne redresse pas un demi-tour et seul tesseract la rattrapait, en plusieurs
+    // secondes, et pas sur un scan crénelé ou penché. On relit la page retournée.
     let turned;
     // `turn` : l'image lue est la page tournée de tant de degrés, sens horaire — pour
     // ramener à la page la place des blocs candidats au titulaire
-    let (img, page_text, text_lines, maybe_anchors, turn) =
-        if extract_iban(&page_text).is_none() && mostly_vertical(&text_lines) {
-            match turn_upright(img, &iban_regex) {
-                Some((image, text, lines, anchors, turn)) => {
-                    turned = image;
-                    (&turned, text, lines, anchors, turn)
-                }
-                None => (img, page_text, text_lines, maybe_anchors, 0),
+    let (img, page_text, text_lines, maybe_anchors, turn) = if extract_iban(&page_text).is_some() {
+        (img, page_text, text_lines, maybe_anchors, 0)
+    } else if mostly_vertical(&text_lines) {
+        match turn_upright(img, &iban_regex) {
+            Some((image, text, lines, anchors, turn)) => {
+                turned = image;
+                (&turned, text, lines, anchors, turn)
             }
-        } else {
-            (img, page_text, text_lines, maybe_anchors, 0)
-        };
+            None => (img, page_text, text_lines, maybe_anchors, 0),
+        }
+    } else if maybe_anchors.is_empty() && !text_lines.is_empty() {
+        match turn_over(img, &iban_regex) {
+            Some((image, text, lines, anchors)) => {
+                turned = image;
+                (&turned, text, lines, anchors, 180)
+            }
+            None => (img, page_text, text_lines, maybe_anchors, 0),
+        }
+    } else {
+        (img, page_text, text_lines, maybe_anchors, 0)
+    };
     let maybe_anchor = maybe_anchors.first();
 
     // Empreinte de forme du texte de la page : des comptes, jamais le texte. On garde la
@@ -465,6 +478,20 @@ fn turn_upright(img: &DynamicImage, iban_regex: &Regex) -> Option<TurnedPage> {
                 stats.alphas + stats.digits,
             )
         })
+}
+
+/// Relit une page retournée d'un demi-tour, et ne la garde que si l'IBAN s'y lit : à
+/// l'endroit, une page sans IBAN lisible le reste à l'envers.
+fn turn_over(
+    img: &DynamicImage,
+    iban_regex: &Regex,
+) -> Option<(DynamicImage, String, Vec<TextLine>, Vec<Anchor>)> {
+    let rotated = img.rotate180();
+    let (text, lines, anchors) = recognize_anchors(&rotated, iban_regex, None);
+
+    extract_iban(&text)
+        .is_some()
+        .then_some((rotated, text, lines, anchors))
 }
 
 fn match_civilite(s: &str) -> bool {
@@ -1597,6 +1624,33 @@ mod tests {
 
     fn postal_code() -> Regex {
         Regex::new(r"[[:space:]]*\d{5}\s+[[:alpha:]]").unwrap()
+    }
+
+    /// Un RIB fictif scanné tête en bas : PP-OCR le lit sur la page retournée, sans
+    /// attendre tesseract, et le titulaire suit.
+    ///
+    /// Demande les modèles PP-OCR, absents de la CI :
+    ///     cargo test --release -- --ignored a_page_upside_down
+    #[test]
+    #[ignore = "demande les modèles PP-OCR (download-models.sh)"]
+    fn a_page_upside_down_is_read_turned_over() {
+        let pdf = std::fs::read("tests/fixtures/rib/text_layer_without_rib.pdf").unwrap();
+        let page = image::load_from_memory(&crate::file_utils::pdf_to_img_bytes(pdf)).unwrap();
+        let mut png = Vec::new();
+        page.rotate180()
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let mut provenance = Provenance::default();
+
+        let rib = image_bytes_to_rib_traced(png, "upside_down.png", &mut provenance)
+            .expect("le RIB est lu");
+
+        assert_eq!(provenance.engine, Some(Engine::PpOcrPage));
+        assert_eq!(
+            crate::rib::normalize_iban(rib.iban()),
+            "FR7630001000644919009562088"
+        );
+        assert!(rib.account_holder().is_some_and(|h| h.contains("DEGAS")));
     }
 
     #[test]
