@@ -10,7 +10,15 @@ PPOCR_BASE="https://www.modelscope.cn/api/v1/models/greatv/oar-ocr/repo?Revision
 
 fetch_checked() {
   name="$1"; sha="$2"
-  curl -fsSL "${PPOCR_BASE}${name}" -o "models/${name}"
+  # The API 302-redirects to a signed CDN URL on another host
+  # (cdn-lfs-*.modelscope.cn), so name the URL that actually failed,
+  # not the entry point.
+  if ! diag=$(curl -fsSL "${PPOCR_BASE}${name}" -o "models/${name}" \
+      -w "http %{http_code} after %{num_redirects} redirect(s), last url: %{url_effective}"); then
+    rm -f "models/${name}"
+    echo "download of ${name} failed: ${diag}" >&2
+    exit 1
+  fi
   echo "${sha}  models/${name}" | sha256sum -c --quiet
 }
 
